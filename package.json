@@ -1,0 +1,58 @@
+{
+  "name": "knoxnet-system-designer",
+  "private": false,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Free, browser-based PDF markup, device layout, and bid generator for AV/security/network system designers",
+  "license": "Apache-2.0",
+  "author": "Phillip Alexander Young",
+  "homepage": "https://github.com/PhillipAlexanderYoung/knoxnet-system-designer",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PhillipAlexanderYoung/knoxnet-system-designer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/PhillipAlexanderYoung/knoxnet-system-designer/issues"
+  },
+  "keywords": [
+    "pdf",
+    "markup",
+    "system-design",
+    "bid",
+    "estimating",
+    "audio-video",
+    "security",
+    "network",
+    "low-voltage",
+    "react",
+    "vite",
+    "typescript"
+  ],
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host"
+  },
+  "dependencies": {
+    "dexie": "^4.0.10",
+    "konva": "^9.3.18",
+    "lucide-react": "^0.468.0",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^4.8.69",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-konva": "^18.2.10",
+    "xlsx": "^0.18.5",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  }
+}

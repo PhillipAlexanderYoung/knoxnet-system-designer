@@ -1,0 +1,119 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --kn-midnight: #0b1220;
+  --kn-steel: #1b2433;
+  --kn-amber: #f4b740;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: radial-gradient(
+      circle at 30% 0%,
+      rgba(244, 183, 64, 0.04),
+      transparent 50%
+    ),
+    radial-gradient(circle at 70% 100%, rgba(79, 183, 255, 0.04), transparent 50%),
+    #0b1220;
+  color: #e2e7ef;
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-feature-settings: "cv11", "ss01", "ss03";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.02);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 160, 184, 0.18);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 160, 184, 0.32);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+@layer components {
+  .glass {
+    @apply bg-steel-300/70 backdrop-blur-md border border-white/5 shadow-glass;
+  }
+  .panel {
+    @apply bg-ink-800/95 backdrop-blur-md border border-white/5 shadow-panel;
+  }
+  .btn {
+    @apply inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium
+      text-ink-100 bg-white/5 hover:bg-white/10 border border-white/5
+      transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-amber-knox/40;
+  }
+  .btn-primary {
+    @apply inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-semibold
+      text-midnight bg-amber-knox hover:bg-amber-glow border border-amber-deep/40
+      transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-amber-knox/40;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 px-2 py-1 rounded-md text-sm
+      text-ink-200 hover:text-ink-50 hover:bg-white/5
+      transition-colors duration-150;
+  }
+  .tool-btn {
+    @apply relative w-9 h-9 inline-flex items-center justify-center rounded-md
+      text-ink-200 hover:text-ink-50 hover:bg-white/10
+      transition-all duration-150;
+  }
+  .tool-btn[data-active="true"] {
+    @apply bg-amber-knox/15 text-amber-knox;
+    box-shadow: 0 0 0 1px rgba(244, 183, 64, 0.4) inset;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-mono
+      bg-white/5 border border-white/5 text-ink-200;
+  }
+  .input {
+    @apply w-full px-2.5 py-1.5 rounded-md text-sm
+      bg-ink-700/60 border border-white/5 text-ink-50
+      placeholder:text-ink-400
+      focus:outline-none focus:ring-2 focus:ring-amber-knox/40 focus:border-amber-knox/40;
+  }
+  .label {
+    @apply text-[11px] font-mono uppercase tracking-wider text-ink-300;
+  }
+  .divider {
+    @apply h-px w-full bg-white/5;
+  }
+  .kbd {
+    @apply inline-flex items-center justify-center px-1.5 py-0.5 rounded
+      text-[10px] font-mono bg-ink-700 border border-white/10 text-ink-200;
+    min-width: 18px;
+  }
+}
+
+/* Dotted grid background for the workspace canvas backdrop */
+.workspace-grid {
+  background-color: #050913;
+  background-image: radial-gradient(
+    circle,
+    rgba(255, 255, 255, 0.04) 1px,
+    transparent 1px
+  );
+  background-size: 24px 24px;
+}

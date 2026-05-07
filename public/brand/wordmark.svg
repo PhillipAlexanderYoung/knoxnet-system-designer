@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 64" fill="none">
+  <text x="0" y="44"
+        font-family="Inter, system-ui, sans-serif"
+        font-weight="800"
+        font-size="38"
+        letter-spacing="6"
+        fill="#F5F7FA">KNOX</text>
+  <text x="124" y="44"
+        font-family="Inter, system-ui, sans-serif"
+        font-weight="300"
+        font-size="38"
+        letter-spacing="6"
+        fill="#F4B740">NET</text>
+  <line x1="220" y1="20" x2="220" y2="46" stroke="#3A4458" stroke-width="1"/>
+  <text x="232" y="32"
+        font-family="JetBrains Mono, monospace"
+        font-weight="500"
+        font-size="11"
+        letter-spacing="2"
+        fill="#94A0B8">SECURITY</text>
+  <text x="232" y="46"
+        font-family="JetBrains Mono, monospace"
+        font-weight="500"
+        font-size="11"
+        letter-spacing="2"
+        fill="#94A0B8">SYSTEMS</text>
+</svg>
