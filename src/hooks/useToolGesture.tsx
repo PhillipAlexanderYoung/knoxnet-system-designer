@@ -55,6 +55,9 @@ export function useToolGesture(
   const nextTag = useProjectStore((s) => s.nextTag);
   const pushToast = useProjectStore((s) => s.pushToast);
 
+  const withinSheet = (p: { x: number; y: number } | null) =>
+    !!p && p.x >= 0 && p.y >= 0 && p.x <= sheet.pageWidth && p.y <= sheet.pageHeight;
+
   /**
    * Resolve the pointer position in sheet (PDF user) coordinates. We try
    * Konva's helper first, then fall back to computing it from the native
@@ -71,10 +74,11 @@ export function useToolGesture(
       if (stage) {
         const p = stage.getPointerPosition?.();
         if (p && isFinite(p.x) && isFinite(p.y)) {
-          return {
+          const sheetPoint = {
             x: (p.x - viewport.x) / viewport.scale,
             y: (p.y - viewport.y) / viewport.scale,
           };
+          return withinSheet(sheetPoint) ? sheetPoint : null;
         }
         const native = e.evt as MouseEvent | undefined;
         const container: HTMLElement | null = stage.container?.() ?? null;
@@ -82,16 +86,17 @@ export function useToolGesture(
           const rect = container.getBoundingClientRect();
           const sx = native.clientX - rect.left;
           const sy = native.clientY - rect.top;
-          return {
+          const sheetPoint = {
             x: (sx - viewport.x) / viewport.scale,
             y: (sy - viewport.y) / viewport.scale,
           };
+          return withinSheet(sheetPoint) ? sheetPoint : null;
         }
       }
     } catch {
       /* fall through */
     }
-    return cursor;
+    return withinSheet(cursor) ? cursor : null;
   };
 
   const [points, setPoints] = useState<{ x: number; y: number }[]>([]);

@@ -142,6 +142,7 @@ export function Editor({ sheet, onCalibrateConfirm }: Props) {
     const sheetX = (pointer.x - viewport.x) / viewport.scale;
     const sheetY = (pointer.y - viewport.y) / viewport.scale;
     setCursor({ x: sheetX, y: sheetY });
+    rectHandlers.onMouseMove(e);
   };
 
   const onMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
@@ -151,7 +152,7 @@ export function Editor({ sheet, onCalibrateConfirm }: Props) {
     const isMiddle = evt.button === 1;
     const isPanTool = activeTool === "pan";
     if (isMiddle || spaceHeld || isPanTool) {
-      const pointer = stage.getPointerPosition();
+      const pointer = stagePointerOf(e, stage);
       if (!pointer) return;
       panStart.current = {
         x: pointer.x,
@@ -161,10 +162,13 @@ export function Editor({ sheet, onCalibrateConfirm }: Props) {
       };
       setPanning(true);
       evt.preventDefault();
+      return;
     }
+    rectHandlers.onMouseDown(e);
   };
 
-  const onMouseUp = () => {
+  const onMouseUp = (e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (!panning) rectHandlers.onMouseUp(e);
     setPanning(false);
     panStart.current = null;
   };
@@ -192,6 +196,7 @@ export function Editor({ sheet, onCalibrateConfirm }: Props) {
           onMouseMove={onMouseMove}
           onMouseDown={onMouseDown}
           onMouseUp={onMouseUp}
+          onDblClick={rectHandlers.onDblClick}
           onMouseLeave={() => {
             setCursor(null);
             setPanning(false);
@@ -226,7 +231,7 @@ export function Editor({ sheet, onCalibrateConfirm }: Props) {
               width={sheet.pageWidth}
               height={sheet.pageHeight}
               fill="transparent"
-              {...rectHandlers}
+              listening={false}
             />
             {/* Masks render between background and markups so devices stay
                 visible on top while the user can still see what gets
