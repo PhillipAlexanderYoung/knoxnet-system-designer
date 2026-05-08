@@ -9,10 +9,14 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 <p align="center">
-  <img src="docs/demo/thumbnail-quick-demo.png" alt="Knoxnet System Designer quick demo thumbnail" width="100%">
+  <a href="https://www.youtube.com/watch?v=HnLf3ZR60c4">
+    <img src="docs/demo/thumbnail-quick-demo.png" alt="Watch the Knoxnet System Designer startup and quick demo video" width="100%">
+  </a>
 </p>
 
 ## Demo preview
+
+[Watch the 8-minute startup and quick demo video on YouTube.](https://www.youtube.com/watch?v=HnLf3ZR60c4)
 
 Install from GitHub, open the local browser app, mark up a PDF plan with
 devices and coverage, then export a branded customer deliverable.
