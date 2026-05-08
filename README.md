@@ -8,6 +8,24 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
+<p align="center">
+  <img src="docs/demo/thumbnail-quick-demo.png" alt="Knoxnet System Designer quick demo thumbnail" width="100%">
+</p>
+
+## Demo preview
+
+Install from GitHub, open the local browser app, mark up a PDF plan with
+devices and coverage, then export a branded customer deliverable.
+
+<p align="center">
+  <img src="docs/demo/install-terminal.jpeg" alt="Terminal showing clone, npm install, and npm run dev" width="48%">
+  <img src="docs/demo/device-placement.jpeg" alt="Device placement and camera coverage on a PDF drawing" width="48%">
+</p>
+
+<p align="center">
+  <img src="docs/demo/branded-cover-sheet.jpeg" alt="Branded project cover sheet export" width="72%">
+</p>
+
 ## Quick start
 
 ```bash
