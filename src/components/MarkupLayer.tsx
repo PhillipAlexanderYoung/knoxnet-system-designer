@@ -1,6 +1,7 @@
-import { Group, Line, Text, Rect, Arrow, Path, Label, Tag } from "react-konva";
+import { Circle, Group, Line, Text, Rect, Arrow, Path, Label, Tag } from "react-konva";
 import {
   useProjectStore,
+  type Project,
   type Sheet,
   type Markup,
   type DeviceMarkup,
@@ -18,8 +19,14 @@ import {
   ptsToFeet,
 } from "../lib/geometry";
 import { categoryColor } from "../brand/tokens";
+import {
+  clampTagOffset,
+  maxTagOffsetDistance,
+  resolveTagFontSize,
+} from "../lib/tagDefaults";
 
 export function MarkupLayer({ sheet }: { sheet: Sheet }) {
+  const project = useProjectStore((s) => s.project);
   const layers = useProjectStore((s) => s.layers);
   const selected = useProjectStore((s) => s.selectedMarkupIds);
   const setSelected = useProjectStore((s) => s.setSelected);
@@ -99,7 +106,7 @@ export function MarkupLayer({ sheet }: { sheet: Sheet }) {
           activeTool === "select" && !m.locked && !isLayerLocked(m.layer);
         return (
           <Group key={m.id}>
-            {renderMarkup(m, sheet, isSel, draggable, handleClick(m), updateMarkup)}
+            {renderMarkup(m, sheet, isSel, draggable, handleClick(m), updateMarkup, project)}
           </Group>
         );
       })}
@@ -114,6 +121,7 @@ function renderMarkup(
   draggable: boolean,
   onClick: (e: any) => void,
   updateMarkup: ReturnType<typeof useProjectStore.getState>["updateMarkup"],
+  project: Project | null,
 ) {
   switch (m.kind) {
     case "device": {
@@ -122,22 +130,50 @@ function renderMarkup(
       const size = m.size ?? 28;
       const color = m.colorOverride ?? categoryColor[dev.category] ?? "#94A0B8";
       const labelText = m.labelOverride ? `${m.tag} · ${m.labelOverride}` : m.tag;
-      // Tag font size: explicit override wins; otherwise scale with the
-      // icon size so default placements stay readable on small devices.
-      const tagFontSize = m.tagFontSize ?? Math.max(10, size * 0.35);
+      // Tag font size: per-device override > project default > auto-scale.
+      const tagFontSize = resolveTagFontSize(m, project);
       // Tag offset: stored on the markup when the user drags or types
       // a value; falls back to the historical top-right placement.
       const defaultDx = size / 2 + 4;
       const defaultDy = -size / 2 - 4;
       const tagDx = m.tagOffsetX ?? defaultDx;
       const tagDy = m.tagOffsetY ?? defaultDy;
-      // Leader: only drawn when the user has pulled the tag visibly
-      // away from the device. Keeps the association obvious without
-      // cluttering tightly-placed default layouts.
+      // Estimate the pill rect so the leader can clip cleanly to the
+      // pill's edge instead of stabbing through the text. Konva sizes
+      // the Label automatically at render time; the JetBrains Mono
+      // approximation here matches what the export uses to keep the
+      // editor preview aligned with the printed PDF.
+      const padding = 4;
+      const pillW = labelText.length * tagFontSize * 0.6 + padding * 2;
+      const pillH = tagFontSize + padding * 2;
+      const pillLeft = m.x + tagDx;
+      const pillTop = m.y + tagDy;
+      const pinned =
+        m.tagOffsetX !== undefined || m.tagOffsetY !== undefined;
+      // Always draw a leader when the tag has any custom offset — even
+      // small nudges read as "this label belongs to that device" when
+      // the line is present. Skips drawing when the tag still sits in
+      // the default top-right pocket so a clean grid stays clean.
       const dist = Math.hypot(tagDx, tagDy);
-      const wantLeader =
-        (m.tagOffsetX !== undefined || m.tagOffsetY !== undefined) &&
-        dist > size * 0.9;
+      const wantLeader = pinned && dist > 0;
+      // Anchor the leader to the disc edge on the device side and the
+      // pill edge on the tag side so it never crosses through either.
+      const r = size / 2;
+      const leaderStart = wantLeader
+        ? {
+            x: m.x + (tagDx / dist) * r,
+            y: m.y + (tagDy / dist) * r,
+          }
+        : null;
+      // Closest point on the pill rect to the device center is the
+      // device center clamped into the rect bounds. Same trick the
+      // export uses (Math.max(left, Math.min(devX, right))).
+      const leaderEnd = wantLeader
+        ? {
+            x: Math.max(pillLeft, Math.min(m.x, pillLeft + pillW)),
+            y: Math.max(pillTop, Math.min(m.y, pillTop + pillH)),
+          }
+        : null;
       return (
         <Group>
           <DeviceIconNode
@@ -155,29 +191,57 @@ function renderMarkup(
               updateMarkup(m.id, { x: e.target.x(), y: e.target.y() } as any)
             }
           />
-          {wantLeader && (
-            <Line
-              points={[m.x, m.y, m.x + tagDx, m.y + tagDy]}
-              stroke={color}
-              strokeWidth={0.6}
-              opacity={0.45}
-              dash={[3, 2]}
-              listening={false}
-            />
+          {wantLeader && leaderStart && leaderEnd && (
+            <>
+              <Line
+                points={[leaderStart.x, leaderStart.y, leaderEnd.x, leaderEnd.y]}
+                stroke={color}
+                strokeWidth={0.6}
+                opacity={0.55}
+                dash={[3, 2]}
+                listening={false}
+              />
+              {/* Filled dot at the device end signals "user-pinned" so
+                  the tag still reads as part of the device at a glance. */}
+              <Circle
+                x={leaderStart.x}
+                y={leaderStart.y}
+                radius={1.2}
+                fill={color}
+                opacity={0.85}
+                listening={false}
+              />
+            </>
           )}
           <Label
-            x={m.x + tagDx}
-            y={m.y + tagDy}
+            x={pillLeft}
+            y={pillTop}
             draggable={draggable}
             onClick={onClick}
             onTap={onClick}
             onMouseDown={onClick}
+            // Soft clamp during drag — keeps the pill visually tied to
+            // the device by preventing the user from accidentally
+            // stranding it across the sheet. Distance scales with
+            // device size so big icons get correspondingly more reach.
+            onDragMove={(e) => {
+              const dx = e.target.x() - m.x;
+              const dy = e.target.y() - m.y;
+              const max = maxTagOffsetDistance(size);
+              const d = Math.hypot(dx, dy);
+              if (d > max) {
+                const k = max / d;
+                e.target.x(m.x + dx * k);
+                e.target.y(m.y + dy * k);
+              }
+            }}
             onDragEnd={(e) => {
               const dx = e.target.x() - m.x;
               const dy = e.target.y() - m.y;
+              const clamped = clampTagOffset(dx, dy, size);
               updateMarkup(m.id, {
-                tagOffsetX: dx,
-                tagOffsetY: dy,
+                tagOffsetX: clamped.dx,
+                tagOffsetY: clamped.dy,
               } as Partial<DeviceMarkup>);
             }}
           >
@@ -201,7 +265,7 @@ function renderMarkup(
               fontStyle="500"
               fontSize={tagFontSize}
               fill="#F5F7FA"
-              padding={4}
+              padding={padding}
               perfectDrawEnabled={false}
             />
           </Label>

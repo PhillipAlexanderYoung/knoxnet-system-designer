@@ -907,6 +907,18 @@ export interface Project {
    * elkjs for auto-routing.
    */
   diagrams?: Diagram[];
+  /**
+   * Project-wide defaults for the device tag pill. Per-device
+   * `tagFontSize` and `tagOffsetX/Y` overrides on `DeviceMarkup`
+   * always win; this is the fallback that drives both the editor
+   * canvas and the markup PDF export when the user hasn't pinned a
+   * value on the device.
+   */
+  tagDefaults?: {
+    /** Default font size in PDF units. When undefined the editor
+     *  scales font with icon size: `max(10, size * 0.35)`. */
+    fontSize?: number;
+  };
   createdAt: number;
   updatedAt: number;
 }
@@ -1107,6 +1119,13 @@ interface State {
     tag: string,
     pos: DiagramNodePosition,
   ) => void;
+
+  /** Project-level tag defaults + bulk tag operations. The bulk ops
+   *  scope to a single sheet by id, or every sheet when sheetId is
+   *  undefined. */
+  setTagDefaults: (patch: Partial<NonNullable<Project["tagDefaults"]>>) => void;
+  resetAllTagPositions: (sheetId?: string) => number;
+  applyTagFontSizeToAll: (fontSize: number, sheetId?: string) => number;
 
   setCalibration: (sheetId: string, c: Calibration | undefined) => void;
   setCursor: (p: { x: number; y: number } | null) => void;
@@ -2051,6 +2070,82 @@ export const useProjectStore = create<State>()(
           },
         };
       }),
+
+    setTagDefaults: (patch) =>
+      set((s) => {
+        if (!s.project) return s;
+        const cur = s.project.tagDefaults ?? {};
+        const next = { ...cur, ...patch };
+        // Drop empty values so the persisted record stays minimal and
+        // future migrators don't need to special-case undefined keys.
+        for (const k of Object.keys(next) as Array<keyof typeof next>) {
+          if (next[k] === undefined || (next[k] as unknown) === "") {
+            delete next[k];
+          }
+        }
+        return {
+          project: {
+            ...s.project,
+            tagDefaults: Object.keys(next).length === 0 ? undefined : next,
+            updatedAt: Date.now(),
+          },
+        };
+      }),
+
+    resetAllTagPositions: (sheetId) => {
+      let cleared = 0;
+      set((s) => {
+        if (!s.project) return s;
+        return {
+          project: {
+            ...s.project,
+            sheets: s.project.sheets.map((sh) => {
+              if (sheetId !== undefined && sh.id !== sheetId) return sh;
+              return {
+                ...sh,
+                markups: sh.markups.map((m) => {
+                  if (m.kind !== "device") return m;
+                  if (m.tagOffsetX === undefined && m.tagOffsetY === undefined) {
+                    return m;
+                  }
+                  cleared++;
+                  const { tagOffsetX: _x, tagOffsetY: _y, ...rest } = m;
+                  return rest as typeof m;
+                }),
+              };
+            }),
+            updatedAt: Date.now(),
+          },
+        };
+      });
+      return cleared;
+    },
+
+    applyTagFontSizeToAll: (fontSize, sheetId) => {
+      let touched = 0;
+      const clamped = Math.max(4, Math.min(64, fontSize));
+      set((s) => {
+        if (!s.project) return s;
+        return {
+          project: {
+            ...s.project,
+            sheets: s.project.sheets.map((sh) => {
+              if (sheetId !== undefined && sh.id !== sheetId) return sh;
+              return {
+                ...sh,
+                markups: sh.markups.map((m) => {
+                  if (m.kind !== "device") return m;
+                  touched++;
+                  return { ...m, tagFontSize: clamped };
+                }),
+              };
+            }),
+            updatedAt: Date.now(),
+          },
+        };
+      });
+      return touched;
+    },
 
     setCalibration: (sheetId, c) =>
       set((s) => {

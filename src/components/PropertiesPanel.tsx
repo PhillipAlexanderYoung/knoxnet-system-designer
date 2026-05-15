@@ -20,6 +20,7 @@ import {
   effectivePortsForTag,
   findPort,
 } from "../lib/connections";
+import { clampTagOffset, resolveTagFontSize } from "../lib/tagDefaults";
 import { cables, cablesById } from "../data/cables";
 import { categoryColor, categoryLabel } from "../brand/tokens";
 import { resolveCoverage, type EffectiveCoverage } from "../lib/coverage";
@@ -272,6 +273,9 @@ function Field({
 // Surfaces the device's tag font size + offset overrides so the user
 // can both type values in and reset back to the auto defaults. Drag
 // support lives on the canvas; this is the keyboard / numeric fallback.
+// Typed offsets are clamped to the same per-device max distance the
+// drag handler enforces, so the panel can't strand a tag the canvas
+// would refuse to.
 
 function TagLayoutField({
   markup,
@@ -280,9 +284,9 @@ function TagLayoutField({
   markup: DeviceMarkup;
   onChange: (patch: Partial<DeviceMarkup>) => void;
 }) {
+  const project = useProjectStore((s) => s.project);
   const size = markup.size ?? 28;
-  const defaultFontSize = Math.max(10, size * 0.35);
-  const fontSize = markup.tagFontSize ?? defaultFontSize;
+  const fontSize = resolveTagFontSize(markup, project);
   const defaultDx = size / 2 + 4;
   const defaultDy = -size / 2 - 4;
   const dx = markup.tagOffsetX ?? defaultDx;
@@ -290,6 +294,10 @@ function TagLayoutField({
   const moved =
     markup.tagOffsetX !== undefined || markup.tagOffsetY !== undefined;
   const sized = markup.tagFontSize !== undefined;
+  const clampInput = (nextDx: number, nextDy: number) => {
+    const c = clampTagOffset(nextDx, nextDy, size);
+    onChange({ tagOffsetX: c.dx, tagOffsetY: c.dy } as Partial<DeviceMarkup>);
+  };
   return (
     <div className="rounded-md border border-white/5 bg-ink-900/30 p-2 space-y-1.5">
       <div className="flex items-center justify-between">
@@ -315,7 +323,14 @@ function TagLayoutField({
           <div className="text-[10px] text-ink-400">Font size</div>
           <div className="text-[10px] text-ink-500 font-mono">
             {fontSize.toFixed(0)} pt
-            {!sized && <span className="text-ink-600"> · auto</span>}
+            {!sized && (
+              <span className="text-ink-600">
+                {" · "}
+                {project?.tagDefaults?.fontSize !== undefined
+                  ? "project default"
+                  : "auto"}
+              </span>
+            )}
           </div>
         </div>
         <input
@@ -343,7 +358,7 @@ function TagLayoutField({
             value={Math.round(dx)}
             onChange={(e) => {
               const v = parseFloat(e.target.value);
-              if (isFinite(v)) onChange({ tagOffsetX: v });
+              if (isFinite(v)) clampInput(v, dy);
             }}
           />
           <input
@@ -352,7 +367,7 @@ function TagLayoutField({
             value={Math.round(dy)}
             onChange={(e) => {
               const v = parseFloat(e.target.value);
-              if (isFinite(v)) onChange({ tagOffsetY: v });
+              if (isFinite(v)) clampInput(dx, v);
             }}
           />
         </div>

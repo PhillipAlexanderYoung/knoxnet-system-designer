@@ -105,7 +105,13 @@ export async function exportMarkupPdf(project: Project) {
       }
       // 2. Markups (devices, cables, callouts, etc.) over the masked page.
       try {
-        drawMarkupsOnPage(page, sheet, project.exportVisibility, fonts);
+        drawMarkupsOnPage(
+          page,
+          sheet,
+          project.exportVisibility,
+          fonts,
+          project.tagDefaults?.fontSize,
+        );
       } catch (e) {
         console.error(`[export] markup draw failed on sheet "${sheet.name}":`, e);
       }
@@ -616,6 +622,7 @@ function drawMarkupsOnPage(
   sheet: Sheet,
   exportVisibility: ExportVisibility | undefined,
   fonts: BrandFonts,
+  projectTagFontDefault: number | undefined,
 ) {
   // Per-markup-kind filter — `false` means the user explicitly toggled
   // the kind off in the Export Visibility panel. Missing entries default
@@ -627,7 +634,12 @@ function drawMarkupsOnPage(
   // a user-pinned offset bypass the auto-layout entirely (their pin
   // wins). Auto-laid pills still avoid covering other device icons
   // and pinned tags. See `layoutDeviceTags` for the full algorithm.
-  const tagLayouts = layoutDeviceTags(sheet, exportVisibility, fonts);
+  const tagLayouts = layoutDeviceTags(
+    sheet,
+    exportVisibility,
+    fonts,
+    projectTagFontDefault,
+  );
 
   // First pass: render coverage shapes BEHIND the markups so the device
   // icons stay readable on top of them.
@@ -701,6 +713,7 @@ function layoutDeviceTags(
   sheet: Sheet,
   exportVisibility: ExportVisibility | undefined,
   fonts: BrandFonts,
+  projectTagFontDefault: number | undefined,
 ): Map<string, TagLayout> {
   const layouts = new Map<string, TagLayout>();
   const isVisible = (m: Markup) =>
@@ -737,10 +750,13 @@ function layoutDeviceTags(
     if (!text) continue;
 
     const size = m.size ?? 28;
-    // Honor the per-instance override; otherwise scale with icon and
-    // clamp to a readable range so tiny icons don't get unreadable tags.
+    // Resolution order: per-instance override > project default >
+    // size-scaled auto (clamped to a readable range so tiny icons
+    // don't end up with unreadable tags).
     const fontSize =
-      m.tagFontSize ?? Math.max(7, Math.min(11, size * 0.32));
+      m.tagFontSize ??
+      projectTagFontDefault ??
+      Math.max(7, Math.min(11, size * 0.32));
     // Precise text width from the embedded font — the legacy
     // char-count approximation could mis-size the pill by a few
     // points which showed up as edge clipping on long tags.
