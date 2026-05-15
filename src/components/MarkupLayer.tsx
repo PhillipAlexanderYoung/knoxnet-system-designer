@@ -217,6 +217,14 @@ function renderMarkup(
             x={pillLeft}
             y={pillTop}
             draggable={draggable}
+            // Distinguish click-then-mouse-out from intentional drag.
+            // Without a threshold Konva starts dragging on mousedown and
+            // the pill follows the cursor as the user moves toward the
+            // Properties panel. 8 stage pixels matches the standard
+            // browser click/drag boundary and keeps the tag "stuck" on
+            // a click-only gesture so the user can read it without
+            // accidentally repositioning it.
+            dragDistance={8}
             onClick={onClick}
             onTap={onClick}
             onMouseDown={onClick}
