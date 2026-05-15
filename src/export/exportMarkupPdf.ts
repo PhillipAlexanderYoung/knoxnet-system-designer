@@ -4,6 +4,7 @@ import type {
   Sheet,
   Markup,
   ExportVisibility,
+  DeviceMarkup,
 } from "../store/projectStore";
 import { devicesById } from "../data/devices";
 import { cablesById } from "../data/cables";
@@ -104,7 +105,7 @@ export async function exportMarkupPdf(project: Project) {
       }
       // 2. Markups (devices, cables, callouts, etc.) over the masked page.
       try {
-        drawMarkupsOnPage(page, sheet, project.exportVisibility);
+        drawMarkupsOnPage(page, sheet, project.exportVisibility, fonts);
       } catch (e) {
         console.error(`[export] markup draw failed on sheet "${sheet.name}":`, e);
       }
@@ -614,6 +615,7 @@ function drawMarkupsOnPage(
   page: PDFPage,
   sheet: Sheet,
   exportVisibility: ExportVisibility | undefined,
+  fonts: BrandFonts,
 ) {
   // Per-markup-kind filter — `false` means the user explicitly toggled
   // the kind off in the Export Visibility panel. Missing entries default
@@ -621,11 +623,11 @@ function drawMarkupsOnPage(
   const isKindVisible = (m: Markup) =>
     exportVisibility?.[m.kind] !== false;
 
-  // Pre-resolve where each device's tag pill should sit. We never move
-  // the device itself — the layout pass only nudges the tag's offset so
-  // pills don't fully cover other device icons or other tags. See
-  // `layoutDeviceTags` for the full algorithm.
-  const tagLayouts = layoutDeviceTags(sheet, exportVisibility);
+  // Pre-resolve where each device's tag pill should sit. Devices with
+  // a user-pinned offset bypass the auto-layout entirely (their pin
+  // wins). Auto-laid pills still avoid covering other device icons
+  // and pinned tags. See `layoutDeviceTags` for the full algorithm.
+  const tagLayouts = layoutDeviceTags(sheet, exportVisibility, fonts);
 
   // First pass: render coverage shapes BEHIND the markups so the device
   // icons stay readable on top of them.
@@ -649,7 +651,7 @@ function drawMarkupsOnPage(
     if (m.hidden) continue;
     if (!isKindVisible(m)) continue;
     try {
-      drawSingleMarkup(page, sheet, m, tagLayouts);
+      drawSingleMarkup(page, sheet, m, tagLayouts, fonts);
     } catch (e) {
       // One bad markup must not abort the whole sheet — log and continue so
       // the user still gets the rest of their work in the export.
@@ -698,6 +700,7 @@ interface TagLayout {
 function layoutDeviceTags(
   sheet: Sheet,
   exportVisibility: ExportVisibility | undefined,
+  fonts: BrandFonts,
 ): Map<string, TagLayout> {
   const layouts = new Map<string, TagLayout>();
   const isVisible = (m: Markup) =>
@@ -711,6 +714,18 @@ function layoutDeviceTags(
     discs.push({ id: m.id, x: m.x, y: m.y, r: size / 2 });
   }
 
+  // Two-pass layout. Pass 1: lock in every user-pinned pill so they
+  // win unconditionally — the auto-layout in pass 2 then routes
+  // around them. Pass 2: greedy candidate search for the rest.
+  type Pending = {
+    m: DeviceMarkup;
+    text: string;
+    size: number;
+    fontSize: number;
+    w: number;
+    h: number;
+  };
+  const pending: Pending[] = [];
   for (const m of sheet.markups) {
     if (m.kind !== "device" || !isVisible(m)) continue;
     const dev = devicesById[m.deviceId];
@@ -722,23 +737,48 @@ function layoutDeviceTags(
     if (!text) continue;
 
     const size = m.size ?? 28;
-    const r = size / 2;
-    const fontSize = Math.max(7, Math.min(11, size * 0.32));
-    // Width formula matches the one used at draw time so the layout
-    // pass and the actual pill agree.
-    const w = text.length * fontSize * 0.55 + 10;
+    // Honor the per-instance override; otherwise scale with icon and
+    // clamp to a readable range so tiny icons don't get unreadable tags.
+    const fontSize =
+      m.tagFontSize ?? Math.max(7, Math.min(11, size * 0.32));
+    // Precise text width from the embedded font — the legacy
+    // char-count approximation could mis-size the pill by a few
+    // points which showed up as edge clipping on long tags.
+    const textW = fonts.mono.widthOfTextAtSize(text, fontSize);
+    const w = textW + 10; // 5pt padding L/R
     const h = fontSize + 4;
 
-    const candidates = generateTagCandidates(r, w, h);
+    if (m.tagOffsetX !== undefined || m.tagOffsetY !== undefined) {
+      // Pinned — record immediately so subsequent auto-layouts route
+      // around the pinned rect.
+      const r = size / 2;
+      const dx = m.tagOffsetX ?? r + 4;
+      const dy = m.tagOffsetY ?? -r - 4;
+      layouts.set(m.id, {
+        x: m.x + dx,
+        y: m.y + dy,
+        w,
+        h,
+        text,
+        fontSize,
+      });
+      continue;
+    }
+    pending.push({ m, text, size, fontSize, w, h });
+  }
+
+  for (const p of pending) {
+    const r = p.size / 2;
+    const candidates = generateTagCandidates(r, p.w, p.h);
     let chosen: { dx: number; dy: number } | null = null;
     for (const cand of candidates) {
       const rect: Rect = {
-        x: m.x + cand.dx,
-        y: m.y + cand.dy,
-        w,
-        h,
+        x: p.m.x + cand.dx,
+        y: p.m.y + cand.dy,
+        w: p.w,
+        h: p.h,
       };
-      if (!tagCollides(rect, m.id, discs, layouts)) {
+      if (!tagCollides(rect, p.m.id, discs, layouts)) {
         chosen = cand;
         break;
       }
@@ -748,13 +788,13 @@ function layoutDeviceTags(
     // sees in the editor.
     if (!chosen) chosen = { dx: r + 4, dy: -r - 4 };
 
-    layouts.set(m.id, {
-      x: m.x + chosen.dx,
-      y: m.y + chosen.dy,
-      w,
-      h,
-      text,
-      fontSize,
+    layouts.set(p.m.id, {
+      x: p.m.x + chosen.dx,
+      y: p.m.y + chosen.dy,
+      w: p.w,
+      h: p.h,
+      text: p.text,
+      fontSize: p.fontSize,
     });
   }
 
@@ -1124,6 +1164,7 @@ function drawSingleMarkup(
   sheet: Sheet,
   m: Markup,
   tagLayouts?: Map<string, TagLayout>,
+  fonts?: BrandFonts,
 ) {
   // Convert all coords from PDF-down (our markup space) to pdf-lib up
   const py = (yDown: number) => sheet.pageHeight - yDown;
@@ -1209,10 +1250,14 @@ function drawSingleMarkup(
         borderWidth: 0.4,
         opacity: 0.95,
       });
+      // Embedded mono font keeps the tag crisp at any zoom and gives
+      // us exact glyph widths upstream so the pill is sized to the
+      // text rather than approximated character-count.
       page.drawText(labelText, {
         x: tagX + 5,
         y: tagY + 3,
         size: fontSize,
+        font: fonts?.mono,
         color: hex("#F5F7FA"),
       });
       // Leader line for tags that ended up far from their device — a

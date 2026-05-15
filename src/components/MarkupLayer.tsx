@@ -122,8 +122,22 @@ function renderMarkup(
       const size = m.size ?? 28;
       const color = m.colorOverride ?? categoryColor[dev.category] ?? "#94A0B8";
       const labelText = m.labelOverride ? `${m.tag} · ${m.labelOverride}` : m.tag;
-      // The label is rendered separately and made independently clickable,
-      // so clicking the tag pill also selects/edits the device.
+      // Tag font size: explicit override wins; otherwise scale with the
+      // icon size so default placements stay readable on small devices.
+      const tagFontSize = m.tagFontSize ?? Math.max(10, size * 0.35);
+      // Tag offset: stored on the markup when the user drags or types
+      // a value; falls back to the historical top-right placement.
+      const defaultDx = size / 2 + 4;
+      const defaultDy = -size / 2 - 4;
+      const tagDx = m.tagOffsetX ?? defaultDx;
+      const tagDy = m.tagOffsetY ?? defaultDy;
+      // Leader: only drawn when the user has pulled the tag visibly
+      // away from the device. Keeps the association obvious without
+      // cluttering tightly-placed default layouts.
+      const dist = Math.hypot(tagDx, tagDy);
+      const wantLeader =
+        (m.tagOffsetX !== undefined || m.tagOffsetY !== undefined) &&
+        dist > size * 0.9;
       return (
         <Group>
           <DeviceIconNode
@@ -141,12 +155,31 @@ function renderMarkup(
               updateMarkup(m.id, { x: e.target.x(), y: e.target.y() } as any)
             }
           />
+          {wantLeader && (
+            <Line
+              points={[m.x, m.y, m.x + tagDx, m.y + tagDy]}
+              stroke={color}
+              strokeWidth={0.6}
+              opacity={0.45}
+              dash={[3, 2]}
+              listening={false}
+            />
+          )}
           <Label
-            x={m.x + size / 2 + 4}
-            y={m.y - size / 2 - 4}
+            x={m.x + tagDx}
+            y={m.y + tagDy}
+            draggable={draggable}
             onClick={onClick}
             onTap={onClick}
             onMouseDown={onClick}
+            onDragEnd={(e) => {
+              const dx = e.target.x() - m.x;
+              const dy = e.target.y() - m.y;
+              updateMarkup(m.id, {
+                tagOffsetX: dx,
+                tagOffsetY: dy,
+              } as Partial<DeviceMarkup>);
+            }}
           >
             <Tag
               fill="#0B1220"
@@ -156,14 +189,20 @@ function renderMarkup(
               shadowColor="rgba(0,0,0,0.4)"
               shadowBlur={4}
               shadowOpacity={0.6}
+              // Skip Konva's double-draw stroke pass — keeps the pill
+              // edge crisp at any zoom without the soft-aliased halo
+              // that the default redraw introduces.
+              perfectDrawEnabled={false}
+              strokeScaleEnabled={false}
             />
             <Text
               text={labelText}
               fontFamily="JetBrains Mono"
               fontStyle="500"
-              fontSize={Math.max(10, size * 0.35)}
+              fontSize={tagFontSize}
               fill="#F5F7FA"
               padding={4}
+              perfectDrawEnabled={false}
             />
           </Label>
         </Group>

@@ -585,6 +585,22 @@ export interface DeviceMarkup extends BaseMarkup {
    * the bundled spec can't anticipate. Most devices won't need this.
    */
   instancePorts?: PortSpec[];
+  /**
+   * Tag pill offset from the device center, in PDF user units. When
+   * undefined, the editor + export default to the top-right of the
+   * device disc. Set by dragging the pill on the canvas or via the
+   * properties panel — survives sheet reshuffling so a carefully
+   * placed tag never snaps back.
+   */
+  tagOffsetX?: number;
+  tagOffsetY?: number;
+  /**
+   * Tag font size override in PDF user units. When undefined, the
+   * editor scales font with icon size and the export clamps to a
+   * readable range. Set to take exact control of label size
+   * regardless of icon size.
+   */
+  tagFontSize?: number;
 }
 
 export interface CableMarkup extends BaseMarkup {

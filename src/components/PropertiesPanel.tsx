@@ -267,6 +267,104 @@ function Field({
   );
 }
 
+// ───── Tag layout controls ─────
+//
+// Surfaces the device's tag font size + offset overrides so the user
+// can both type values in and reset back to the auto defaults. Drag
+// support lives on the canvas; this is the keyboard / numeric fallback.
+
+function TagLayoutField({
+  markup,
+  onChange,
+}: {
+  markup: DeviceMarkup;
+  onChange: (patch: Partial<DeviceMarkup>) => void;
+}) {
+  const size = markup.size ?? 28;
+  const defaultFontSize = Math.max(10, size * 0.35);
+  const fontSize = markup.tagFontSize ?? defaultFontSize;
+  const defaultDx = size / 2 + 4;
+  const defaultDy = -size / 2 - 4;
+  const dx = markup.tagOffsetX ?? defaultDx;
+  const dy = markup.tagOffsetY ?? defaultDy;
+  const moved =
+    markup.tagOffsetX !== undefined || markup.tagOffsetY !== undefined;
+  const sized = markup.tagFontSize !== undefined;
+  return (
+    <div className="rounded-md border border-white/5 bg-ink-900/30 p-2 space-y-1.5">
+      <div className="flex items-center justify-between">
+        <span className="label">Tag</span>
+        {(moved || sized) && (
+          <button
+            onClick={() =>
+              onChange({
+                tagOffsetX: undefined,
+                tagOffsetY: undefined,
+                tagFontSize: undefined,
+              })
+            }
+            className="text-[10px] font-mono text-ink-400 hover:text-amber-knox"
+            title="Reset tag size and position"
+          >
+            reset
+          </button>
+        )}
+      </div>
+      <div>
+        <div className="flex items-baseline justify-between">
+          <div className="text-[10px] text-ink-400">Font size</div>
+          <div className="text-[10px] text-ink-500 font-mono">
+            {fontSize.toFixed(0)} pt
+            {!sized && <span className="text-ink-600"> · auto</span>}
+          </div>
+        </div>
+        <input
+          type="range"
+          min={6}
+          max={28}
+          step={0.5}
+          value={fontSize}
+          onChange={(e) => onChange({ tagFontSize: parseFloat(e.target.value) })}
+          className="w-full accent-amber-knox"
+        />
+      </div>
+      <div>
+        <div className="flex items-baseline justify-between">
+          <div className="text-[10px] text-ink-400">Offset (X / Y)</div>
+          <div className="text-[10px] text-ink-500 font-mono">
+            {Math.round(dx)} / {Math.round(dy)}
+            {!moved && <span className="text-ink-600"> · auto</span>}
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-1">
+          <input
+            className="input font-mono text-xs"
+            inputMode="numeric"
+            value={Math.round(dx)}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              if (isFinite(v)) onChange({ tagOffsetX: v });
+            }}
+          />
+          <input
+            className="input font-mono text-xs"
+            inputMode="numeric"
+            value={Math.round(dy)}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              if (isFinite(v)) onChange({ tagOffsetY: v });
+            }}
+          />
+        </div>
+      </div>
+      <p className="text-[10px] text-ink-500 leading-snug">
+        Drag the pill on the canvas to reposition it. Values are PDF
+        points relative to the device center.
+      </p>
+    </div>
+  );
+}
+
 // ───── Single editor ─────
 
 function SingleMarkupEditor({
@@ -423,6 +521,8 @@ function DeviceProps({
           className="w-full accent-amber-knox"
         />
       </Field>
+
+      <TagLayoutField markup={markup} onChange={onChange} />
 
       <Field label="Rotation" hint={`${markup.rotation ?? 0}°`}>
         <div className="flex items-center gap-1.5">
