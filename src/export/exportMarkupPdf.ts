@@ -66,18 +66,33 @@ export async function exportMarkupPdf(project: Project) {
     console.error("[export] cover page failed:", e);
   }
 
-  const includedSheets = project.sheets.filter((s) => !!s.pdfBytes);
+  // v2.0: every sheet is exportable, regardless of source kind. PDF
+  // sheets keep the original page as the underlay (pixel-perfect re-
+  // export). Non-PDF sheets (DXF / SVG / raster) get a blank page sized
+  // to the sheet's pageWidth / pageHeight; markups + title block render
+  // over a blank background. A future pass can rasterize the DXF or
+  // embed the SVG/raster as a PDF image — for now markups-only keeps
+  // the export pipeline reliable for every kind.
+  const includedSheets = project.sheets;
   let appendedSheetCount = 0;
   for (let i = 0; i < project.sheets.length; i++) {
     const sheet = project.sheets[i];
-    if (!sheet.pdfBytes) {
-      console.warn(`[export] skipping sheet "${sheet.name}" — no PDF bytes`);
-      continue;
-    }
     try {
-      const src = await PDFDocument.load(sheet.pdfBytes);
-      const [copied] = await out.copyPages(src, [0]);
-      out.addPage(copied);
+      const sourceKind = sheet.source?.kind ?? (sheet.pdfBytes ? "pdf" : null);
+      if (sourceKind === "pdf") {
+        const bytes = sheet.source?.kind === "pdf" ? sheet.source.bytes : sheet.pdfBytes;
+        if (!bytes) {
+          console.warn(`[export] skipping sheet "${sheet.name}" — no PDF bytes`);
+          continue;
+        }
+        const src = await PDFDocument.load(bytes);
+        const [copied] = await out.copyPages(src, [0]);
+        out.addPage(copied);
+      } else {
+        // Blank page sized to the sheet — markups + title block draw
+        // over white. Catches DXF / SVG / raster / IFC / missing source.
+        out.addPage([sheet.pageWidth, sheet.pageHeight]);
+      }
       const page = out.getPage(out.getPageCount() - 1);
       const theme = resolveTheme(project.brandTheme, sheet.bgColor);
       // 1. Cover-up masks first so original logos/stamps are hidden
@@ -136,10 +151,10 @@ export async function exportMarkupPdf(project: Project) {
   }
 
   if (appendedSheetCount === 0 && includedSheets.length > 0) {
-    // Every sheet with bytes failed — surface a single clear error rather
-    // than producing an empty cover-only PDF.
+    // Every sheet failed — surface a single clear error rather than
+    // producing an empty cover-only PDF.
     throw new Error(
-      "All sheets failed to copy into the export. The source PDFs may be corrupted or unsupported. See console for per-sheet details.",
+      "All sheets failed to copy into the export. The source drawings may be corrupted or unsupported. See console for per-sheet details.",
     );
   }
 

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { Wordmark, Monogram } from "../brand/Wordmark";
 import { useProjectStore } from "../store/projectStore";
-import { ingestPdfFile } from "../lib/ingest";
+import { ingestFile } from "../lib/ingest";
+import { SUPPORTED_ACCEPT, SUPPORTED_HINT } from "../lib/sheetSource";
+import { importProjectFile } from "../lib/projectFile";
 import { enqueueIngest } from "../lib/ingestQueue";
 import {
   listProjects,
@@ -16,6 +18,7 @@ import {
   FilePlus2,
   FolderOpen,
   Pencil,
+  Share2,
   Trash2,
   X,
 } from "lucide-react";
@@ -58,6 +61,19 @@ export function StartScreen() {
     newProject({ projectName: "Untitled Project" });
   };
 
+  const onOpenProjectFile = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setBusy(true);
+    try {
+      const project = await importProjectFile(files[0]);
+      loadProject(project);
+      pushToast("success", `Opened "${project.meta.projectName}" — all markups restored`);
+    } catch (e) {
+      pushToast("error", e instanceof Error ? e.message : "Could not open project file");
+    }
+    setBusy(false);
+  };
+
   const setProgress = useProjectStore((s) => s.setIngestProgress);
   const resetProgress = useProjectStore((s) => s.resetIngestProgress);
 
@@ -70,12 +86,26 @@ export function StartScreen() {
     setProgress({ total: arr.length });
     let done = 0;
     let failed = 0;
+    let importedSheets = 0;
+    // Track non-PDF imports so we can nudge the user to calibrate —
+    // raster + DXF arrive without real-world scale and any cable / FOV
+    // math will be off until they run the calibration tool.
+    let needsCalibration = 0;
     await Promise.all(
       arr.map((file) =>
         enqueueIngest(async () => {
           try {
-            const sheet = await ingestPdfFile(file);
-            addSheet(sheet);
+            const sheets = await ingestFile(file);
+            for (const sheet of sheets) {
+              addSheet(sheet);
+              if (
+                sheet.source &&
+                (sheet.source.kind === "dxf" || sheet.source.kind === "raster")
+              ) {
+                needsCalibration++;
+              }
+            }
+            importedSheets += sheets.length;
             done++;
             setProgress({ done });
           } catch (e) {
@@ -87,7 +117,18 @@ export function StartScreen() {
         }),
       ),
     );
-    if (done > 0) pushToast("success", `Imported ${done} sheet${done === 1 ? "" : "s"}`);
+    if (importedSheets > 0) {
+      pushToast(
+        "success",
+        `Imported ${importedSheets} sheet${importedSheets === 1 ? "" : "s"} from ${done} file${done === 1 ? "" : "s"}`,
+      );
+    }
+    if (needsCalibration > 0) {
+      pushToast(
+        "info",
+        `${needsCalibration} sheet${needsCalibration === 1 ? "" : "s"} need${needsCalibration === 1 ? "s" : ""} scale calibration — use the Calibrate tool (C) on each one.`,
+      );
+    }
     setBusy(false);
     resetProgress();
   };
@@ -180,26 +221,31 @@ export function StartScreen() {
             <span className="text-amber-knox font-extrabold"> rebranded.</span>
           </h1>
           <p className="text-ink-300 max-w-2xl">
-            Open any architectural, civil, or MEP PDF. Calibrate scale, drop
-            cameras, APs, NIDs, run fiber and copper, generate a real bid — and
-            export a {stickyBranding.fullName === "Knoxnet System Designer"
+            Open any architectural, civil, or MEP drawing — PDF, DXF, SVG, or
+            raster. Calibrate scale, drop cameras, APs, controllers, run fiber
+            and copper, generate any custom report you need — and export a
+            {" "}
+            {stickyBranding.fullName === "Knoxnet System Designer"
               ? "branded"
               : `${stickyBranding.fullName}-branded`}{" "}
             deliverable that actually looks like one.
           </p>
         </section>
 
-        <section className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-12">
+        <section className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-12">
           <label className={`group panel rounded-xl p-6 text-left cursor-pointer transition-all hover:-translate-y-0.5 hover:border-white/20 ${busy ? "opacity-50 pointer-events-none" : ""}`}>
             <FilePlus2 className="w-6 h-6 text-signal-blue mb-3" />
-            <div className="font-semibold text-ink-50 mb-1">Import PDFs</div>
+            <div className="font-semibold text-ink-50 mb-1">Import Drawings</div>
             <div className="text-sm text-ink-300">
-              Pick one or more PDFs to start a new project. Sheets become a
-              navigable set.
+              Pick one or more drawings to start a new project. Sheets become
+              a navigable set.
+            </div>
+            <div className="mt-2 text-[11px] text-ink-400 font-mono leading-snug">
+              {SUPPORTED_HINT}
             </div>
             <input
               type="file"
-              accept="application/pdf"
+              accept={SUPPORTED_ACCEPT}
               multiple
               className="hidden"
               onChange={(e) => onPickFiles(e.target.files)}
@@ -219,6 +265,21 @@ export function StartScreen() {
               Set up project metadata first, then add sheets as they come in.
             </div>
           </button>
+
+          <label className={`group panel rounded-xl p-6 text-left cursor-pointer transition-all hover:-translate-y-0.5 hover:border-signal-green/40 col-span-full md:col-span-1 ${busy ? "opacity-50 pointer-events-none" : ""}`}>
+            <Share2 className="w-6 h-6 text-signal-green mb-3" />
+            <div className="font-semibold text-ink-50 mb-1">Open Project File</div>
+            <div className="text-sm text-ink-300">
+              Open a <span className="font-mono text-ink-200">.knoxnet</span> file shared by
+              a collaborator — all sheets and live markups are restored.
+            </div>
+            <input
+              type="file"
+              accept=".knoxnet,application/json"
+              className="hidden"
+              onChange={(e) => onOpenProjectFile(e.target.files)}
+            />
+          </label>
         </section>
 
         {recents.length > 0 && (

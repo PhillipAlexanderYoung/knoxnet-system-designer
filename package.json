@@ -31,10 +31,14 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview --host"
+    "preview": "vite preview --host",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "dexie": "^4.0.10",
+    "dxf-parser": "^1.1.2",
+    "jsdom": "^25.0.1",
     "konva": "^9.3.18",
     "lucide-react": "^0.468.0",
     "pdf-lib": "^1.17.1",
@@ -42,6 +46,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-konva": "^18.2.10",
+    "vitest": "^2.1.9",
     "xlsx": "^0.18.5",
     "zustand": "^5.0.2"
   },

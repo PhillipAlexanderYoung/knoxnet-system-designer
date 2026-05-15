@@ -12,9 +12,12 @@ import {
   Save,
   Files,
   Server,
+  Share2,
+  GitBranch,
 } from "lucide-react";
 import { exportMarkupPdf } from "../export/exportMarkupPdf";
 import { exportBidXlsx, exportBidPdf } from "../export/exportBid";
+import { exportProjectFile } from "../lib/projectFile";
 import {
   saveProject,
   duplicateProject,
@@ -42,11 +45,22 @@ export function Topbar() {
   const [forkOpen, setForkOpen] = useState(false);
   const [forking, setForking] = useState(false);
   const racksCount = project?.racks?.length ?? 0;
+  const diagramsCount = project?.diagrams?.length ?? 0;
 
   if (!project) return null;
 
-  const onExport = async (kind: "markup-pdf" | "bid-pdf" | "bid-xlsx") => {
+  const onExport = async (kind: "markup-pdf" | "bid-pdf" | "bid-xlsx" | "project-file") => {
     setExportOpen(false);
+    if (kind === "project-file") {
+      try {
+        exportProjectFile(project);
+        pushToast("success", "Project file saved — share the .knoxnet file to collaborate");
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        pushToast("error", `Export failed: ${msg.slice(0, 160)}`);
+      }
+      return;
+    }
     setExporting(true);
     try {
       if (kind === "markup-pdf") {
@@ -182,6 +196,17 @@ export function Topbar() {
               {racksCount}
             </span>
           </button>
+          <button
+            onClick={() => setView("diagrams")}
+            className={`px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition-all ${view === "diagrams" ? "bg-amber-knox/15 text-amber-knox" : "text-ink-300 hover:text-ink-100"}`}
+            title="Signal-flow / block diagrams"
+          >
+            <GitBranch className="w-3.5 h-3.5" />
+            Diagrams
+            <span className="ml-1 px-1 rounded text-[10px] font-mono bg-white/5">
+              {diagramsCount}
+            </span>
+          </button>
         </div>
       </div>
 
@@ -273,6 +298,23 @@ export function Topbar() {
                   </div>
                   <div className="text-xs text-ink-400">
                     Devices, cables, totals — editable
+                  </div>
+                </div>
+              </button>
+              <div className="divider" />
+              <button
+                onClick={() => onExport("project-file")}
+                className="w-full px-4 py-3 text-left hover:bg-white/5 flex items-center gap-3"
+              >
+                <div className="w-8 h-8 rounded-md bg-signal-green/15 text-signal-green flex items-center justify-center">
+                  <Share2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="text-sm font-medium text-ink-50">
+                    Project File (.knoxnet)
+                  </div>
+                  <div className="text-xs text-ink-400">
+                    All sheets + live markups — share to collaborate
                   </div>
                 </div>
               </button>

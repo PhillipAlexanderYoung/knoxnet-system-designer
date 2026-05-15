@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useProjectStore, type MarkupKind } from "../store/projectStore";
-import { ingestPdfFile } from "../lib/ingest";
+import { ingestFile } from "../lib/ingest";
+import { SUPPORTED_ACCEPT, SUPPORTED_HINT } from "../lib/sheetSource";
+import { importProjectFile } from "../lib/projectFile";
 import { enqueueIngest } from "../lib/ingestQueue";
 import { renderPageToCanvas, getCachedDoc } from "../lib/pdfjs";
 import { QUALITY_PROFILES } from "../lib/quality";
@@ -18,10 +20,13 @@ import {
   RefreshCcw,
   FileText,
   ListChecks,
+  Share2,
+  ClipboardList,
 } from "lucide-react";
 import { categoryColor } from "../brand/tokens";
+import { ReportsTab } from "./reports/ReportsTab";
 
-type Tab = "sheets" | "layers";
+type Tab = "sheets" | "layers" | "reports";
 
 export function LeftRail() {
   const project = useProjectStore((s) => s.project);
@@ -29,6 +34,7 @@ export function LeftRail() {
   const setActiveSheet = useProjectStore((s) => s.setActiveSheet);
   const addSheet = useProjectStore((s) => s.addSheet);
   const removeSheet = useProjectStore((s) => s.removeSheet);
+  const loadProject = useProjectStore((s) => s.loadProject);
   const layers = useProjectStore((s) => s.layers);
   const toggleLayer = useProjectStore((s) => s.toggleLayer);
   const setLayerLocked = useProjectStore((s) => s.setLayerLocked);
@@ -39,13 +45,22 @@ export function LeftRail() {
     if (!files) return;
     const arr = Array.from(files);
     let added = 0;
+    let needsCalibration = 0;
     await Promise.all(
       arr.map((f) =>
         enqueueIngest(async () => {
           try {
-            const sheet = await ingestPdfFile(f);
-            addSheet(sheet);
-            added++;
+            const sheets = await ingestFile(f);
+            for (const sheet of sheets) {
+              addSheet(sheet);
+              if (
+                sheet.source &&
+                (sheet.source.kind === "dxf" || sheet.source.kind === "raster")
+              ) {
+                needsCalibration++;
+              }
+            }
+            added += sheets.length;
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             console.error("[ingest]", f.name, e);
@@ -55,6 +70,23 @@ export function LeftRail() {
       ),
     );
     if (added > 0) pushToast("success", `Added ${added} sheet${added === 1 ? "" : "s"}`);
+    if (needsCalibration > 0) {
+      pushToast(
+        "info",
+        `${needsCalibration} sheet${needsCalibration === 1 ? "" : "s"} need${needsCalibration === 1 ? "s" : ""} scale calibration — press C and click two points of a known distance.`,
+      );
+    }
+  };
+
+  const onOpenProjectFile = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    try {
+      const project = await importProjectFile(files[0]);
+      loadProject(project);
+      pushToast("success", `Opened "${project.meta.projectName}" — all markups restored`);
+    } catch (e) {
+      pushToast("error", e instanceof Error ? e.message : "Could not open project file");
+    }
   };
 
   return (
@@ -62,32 +94,52 @@ export function LeftRail() {
       <div className="flex border-b border-white/5">
         <button
           onClick={() => setTab("sheets")}
-          className={`flex-1 px-3 py-2.5 text-xs font-mono uppercase tracking-wider flex items-center justify-center gap-2 ${tab === "sheets" ? "text-amber-knox border-b-2 border-amber-knox" : "text-ink-300 hover:text-ink-100"}`}
+          className={`flex-1 px-2 py-2.5 text-[10px] font-mono uppercase tracking-wider flex items-center justify-center gap-1.5 ${tab === "sheets" ? "text-amber-knox border-b-2 border-amber-knox" : "text-ink-300 hover:text-ink-100"}`}
         >
-          <Files className="w-3.5 h-3.5" />
+          <Files className="w-3 h-3" />
           Sheets
         </button>
         <button
           onClick={() => setTab("layers")}
-          className={`flex-1 px-3 py-2.5 text-xs font-mono uppercase tracking-wider flex items-center justify-center gap-2 ${tab === "layers" ? "text-amber-knox border-b-2 border-amber-knox" : "text-ink-300 hover:text-ink-100"}`}
+          className={`flex-1 px-2 py-2.5 text-[10px] font-mono uppercase tracking-wider flex items-center justify-center gap-1.5 ${tab === "layers" ? "text-amber-knox border-b-2 border-amber-knox" : "text-ink-300 hover:text-ink-100"}`}
         >
-          <Layers className="w-3.5 h-3.5" />
+          <Layers className="w-3 h-3" />
           Layers
+        </button>
+        <button
+          onClick={() => setTab("reports")}
+          className={`flex-1 px-2 py-2.5 text-[10px] font-mono uppercase tracking-wider flex items-center justify-center gap-1.5 ${tab === "reports" ? "text-amber-knox border-b-2 border-amber-knox" : "text-ink-300 hover:text-ink-100"}`}
+        >
+          <ClipboardList className="w-3 h-3" />
+          Reports
         </button>
       </div>
 
       {tab === "sheets" && (
         <div className="flex-1 overflow-y-auto">
-          <div className="p-3">
-            <label className="btn w-full justify-center cursor-pointer">
+          <div className="p-3 space-y-2">
+            <label className="btn w-full justify-center cursor-pointer" title={SUPPORTED_HINT}>
               <FilePlus className="w-4 h-4" />
-              Add PDF
+              Add Drawing
               <input
                 type="file"
-                accept="application/pdf"
+                accept={SUPPORTED_ACCEPT}
                 multiple
                 className="hidden"
                 onChange={(e) => onPickFiles(e.target.files)}
+              />
+            </label>
+            <p className="text-[10px] text-ink-500 leading-snug px-0.5">
+              PDF · DXF · SVG · PNG · JPG · WebP · TIFF
+            </p>
+            <label className="btn-ghost w-full justify-center cursor-pointer text-signal-green hover:text-signal-green border border-signal-green/20 hover:border-signal-green/50 rounded-lg py-1.5 text-xs">
+              <Share2 className="w-3.5 h-3.5" />
+              Open .knoxnet
+              <input
+                type="file"
+                accept=".knoxnet,application/json"
+                className="hidden"
+                onChange={(e) => onOpenProjectFile(e.target.files)}
               />
             </label>
           </div>
@@ -115,6 +167,8 @@ export function LeftRail() {
           {project && project.sheets.length > 0 && <BrandingPanel />}
         </div>
       )}
+
+      {tab === "reports" && <ReportsTab />}
 
       {tab === "layers" && (
         <div className="flex-1 overflow-y-auto p-3 space-y-1">
@@ -210,35 +264,84 @@ function SheetThumb({
     return () => io.disconnect();
   }, []);
 
-  // Render thumb when visible (or when sheet becomes active)
+  // Render thumb when visible (or when sheet becomes active). Branches
+  // on source kind so PDFs, raster images, SVGs, and DXFs all get a
+  // sensible preview — for anything that's not PDF we just paint the
+  // browser-decoded image (or a placeholder for DXF) into the canvas.
   useEffect(() => {
     if (rendered) return;
     if (!visible && !active) return;
     let cancelled = false;
     (async () => {
+      const kind = sheet.source?.kind ?? (sheet.pdfBytes ? "pdf" : null);
       try {
-        if (!sheet.pdfBytes) return;
-        const profile = QUALITY_PROFILES[qualityMode];
-        // Queue thumbnail render so it doesn't fight ingest for CPU
-        await enqueueIngest(async () => {
-          if (!sheet.pdfBytes) return;
-          const doc = await getCachedDoc(sheet.pdfBytes);
-          const page = await doc.getPage(1);
-          const viewport = page.getViewport({ scale: 1 });
+        if (kind === "pdf") {
+          const bytes = sheet.source?.kind === "pdf" ? sheet.source.bytes : sheet.pdfBytes;
+          if (!bytes) return;
+          const profile = QUALITY_PROFILES[qualityMode];
+          await enqueueIngest(async () => {
+            const doc = await getCachedDoc(bytes);
+            const page = await doc.getPage(1);
+            const viewport = page.getViewport({ scale: 1 });
+            const targetW = 200;
+            const scale = targetW / viewport.width;
+            const { canvas } = await renderPageToCanvas(
+              page,
+              scale * profile.thumbScaleMultiplier,
+            );
+            if (cancelled || !ref.current) return;
+            const ctx = ref.current.getContext("2d");
+            if (!ctx) return;
+            ref.current.width = canvas.width;
+            ref.current.height = canvas.height;
+            ctx.drawImage(canvas, 0, 0);
+            setRendered(true);
+          });
+        } else if (kind === "svg" || kind === "raster") {
+          const url = sheet.objectUrl;
+          if (!url) return;
+          const img = new Image();
+          img.decoding = "async";
+          await new Promise<void>((resolve, reject) => {
+            img.onload = () => resolve();
+            img.onerror = () => reject(new Error("decode failed"));
+            img.src = url;
+          });
+          if (cancelled || !ref.current) return;
           const targetW = 200;
-          const scale = targetW / viewport.width;
-          const { canvas } = await renderPageToCanvas(
-            page,
-            scale * profile.thumbScaleMultiplier,
-          );
+          const scale = targetW / Math.max(1, img.naturalWidth);
+          ref.current.width = Math.max(1, img.naturalWidth * scale);
+          ref.current.height = Math.max(1, img.naturalHeight * scale);
+          const ctx = ref.current.getContext("2d");
+          if (!ctx) return;
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, ref.current.width, ref.current.height);
+          ctx.drawImage(img, 0, 0, ref.current.width, ref.current.height);
+          setRendered(true);
+        } else if (kind === "dxf") {
+          // A full DXF thumbnail would mean parsing + raster-rendering;
+          // we render a tiny placeholder card with the entity count
+          // instead. Cheap, communicates "this is a DXF", keeps the
+          // panel snappy even with dozens of sheets.
           if (cancelled || !ref.current) return;
           const ctx = ref.current.getContext("2d");
           if (!ctx) return;
-          ref.current.width = canvas.width;
-          ref.current.height = canvas.height;
-          ctx.drawImage(canvas, 0, 0);
+          ref.current.width = 200;
+          ref.current.height = 133;
+          ctx.fillStyle = "#101624";
+          ctx.fillRect(0, 0, 200, 133);
+          ctx.fillStyle = "#F4B740";
+          ctx.font = "bold 28px ui-monospace, monospace";
+          ctx.fillText("DXF", 12, 80);
+          ctx.fillStyle = "#94A0B8";
+          ctx.font = "11px ui-monospace, monospace";
+          const count =
+            sheet.source?.kind === "dxf"
+              ? sheet.source.parsed.entities.length
+              : 0;
+          ctx.fillText(`${count} entities`, 12, 102);
           setRendered(true);
-        });
+        }
       } catch (e) {
         console.error("thumb render", e);
         if (!cancelled) setError(true);
@@ -247,7 +350,7 @@ function SheetThumb({
     return () => {
       cancelled = true;
     };
-  }, [sheet.pdfBytes, visible, active, rendered, qualityMode]);
+  }, [sheet.id, sheet.pdfBytes, sheet.source, sheet.objectUrl, visible, active, rendered, qualityMode]);
 
   return (
     <div

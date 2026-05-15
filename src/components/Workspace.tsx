@@ -11,6 +11,7 @@ import { BidPanel } from "./BidPanel";
 import { CalibrationDialog } from "./CalibrationDialog";
 import { saveProject } from "../persist/db";
 import { RackBuilder } from "../rack/RackBuilder";
+import { DiagramBuilder } from "../diagrams/DiagramBuilder";
 
 export function Workspace() {
   const project = useProjectStore((s) => s.project);
@@ -38,6 +39,8 @@ export function Workspace() {
       <Topbar />
       {view === "racks" ? (
         <RackBuilder />
+      ) : view === "diagrams" ? (
+        <DiagramBuilder />
       ) : (
         <div className="flex-1 flex overflow-hidden">
           <LeftRail />

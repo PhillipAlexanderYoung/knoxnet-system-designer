@@ -4,6 +4,7 @@ import { useProjectStore, type Sheet } from "../store/projectStore";
 import { getCachedDoc, renderPageToCanvas } from "../lib/pdfjs";
 import { QUALITY_PROFILES, pickRenderScale } from "../lib/quality";
 import { sampleBackgroundColor } from "../lib/sheetAnalysis";
+import { getPdfBytes } from "../lib/sheetSource";
 
 /**
  * Renders the PDF page as a Konva Image.
@@ -53,9 +54,10 @@ export function PdfBackground({
 
     debounceTimer.current = setTimeout(() => {
       (async () => {
-        if (!sheet.pdfBytes) return;
+        const bytes = getPdfBytes(sheet);
+        if (!bytes) return;
         try {
-          const doc = await getCachedDoc(sheet.pdfBytes);
+          const doc = await getCachedDoc(bytes);
           const page = await doc.getPage(1);
           const { canvas, scaleUsed } = await renderPageToCanvas(page, targetScale);
           if (cancelled || myToken !== renderToken.current) return;
@@ -84,6 +86,7 @@ export function PdfBackground({
   }, [
     sheet.id,
     sheet.pdfBytes,
+    sheet.source,
     sheet.bgColor,
     viewportScale,
     image,

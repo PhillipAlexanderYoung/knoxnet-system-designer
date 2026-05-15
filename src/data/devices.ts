@@ -3,6 +3,8 @@
 // render crisply both inside react-konva (Path nodes) and inside pdf-lib
 // (drawSvgPath) on export.
 
+import type { PortSpec } from "../store/projectStore";
+
 export type DeviceCategory =
   | "cameras"
   | "access"
@@ -37,6 +39,80 @@ export interface DeviceType {
   defaultCost: number; // material cost per unit, USD
   laborHours: number; // installation labor per unit
   notes?: string;
+  /**
+   * Bundled port spec for this device type. Surfaces in the
+   * properties-panel connection editor as a dropdown, in reports as
+   * a flattened "Ports" column, and (Phase 4+) as wireable handles in
+   * the signal-flow diagram. Optional — devices without a spec keep
+   * the free-text fallback so the editor never blocks the user.
+   */
+  ports?: PortSpec[];
+}
+
+// ───────── Shared port templates ─────────
+// Most devices fall into one of a handful of physical-port patterns.
+// Pulling them out as helpers keeps the catalog readable and avoids
+// drift (e.g. forgetting to mark camera ETH0 as PoE-in).
+
+const ETH0_POE_IN: PortSpec = {
+  id: "eth0",
+  label: "ETH 0 (PoE in)",
+  kind: "ethernet",
+  poe: "in",
+  speed: "1G",
+};
+
+const ETH0_LAN: PortSpec = {
+  id: "eth0",
+  label: "ETH 0 (LAN)",
+  kind: "ethernet",
+  speed: "1G",
+};
+
+const RS485_BUS: PortSpec = {
+  id: "rs485",
+  label: "RS-485",
+  kind: "serial",
+};
+
+const POWER_DC: PortSpec = {
+  id: "dc-in",
+  label: "DC In (12 V)",
+  kind: "power",
+};
+
+/** Build N copper switch ports with optional PoE on every port. */
+function switchPorts(
+  count: number,
+  opts: { poe?: "out"; speed?: string; prefix?: string } = {},
+): PortSpec[] {
+  const out: PortSpec[] = [];
+  const prefix = opts.prefix ?? "Port";
+  for (let i = 1; i <= count; i++) {
+    out.push({
+      id: `port-${i}`,
+      label: `${prefix} ${i}`,
+      kind: "ethernet",
+      poe: opts.poe,
+      speed: opts.speed ?? "1G",
+    });
+  }
+  return out;
+}
+
+/** Build M SFP/SFP+ uplinks. */
+function sfpPorts(count: number, speed = "10G"): PortSpec[] {
+  const out: PortSpec[] = [];
+  for (let i = 1; i <= count; i++) {
+    out.push({
+      id: `sfp-${i}`,
+      label: `SFP+ ${i}`,
+      kind: "fiber",
+      speed,
+      pluggable: true,
+    });
+  }
+  return out;
 }
 
 // helper: ring + body builder pattern keeps icons consistent
@@ -2350,6 +2426,173 @@ export const devices: DeviceType[] = [
   },
 ];
 
+// ───────── Default port inference ─────────
+// Most catalog entries don't bother spelling out a `ports` array, so we
+// fill in sensible defaults based on category + shortCode at module
+// load time. Explicit `ports` always wins, so a device that needs a
+// custom layout can just add `ports: [...]` to its entry.
+
+function inferDefaultPorts(d: DeviceType): PortSpec[] | undefined {
+  if (d.ports) return d.ports; // explicit wins
+  const code = d.shortCode.toUpperCase();
+  switch (d.category) {
+    case "cameras":
+      // Every IP camera has one PoE-in copper port; PTZ cameras
+      // typically add an RS-485 line for legacy joystick control.
+      if (code === "PTZ") return [ETH0_POE_IN, RS485_BUS];
+      return [ETH0_POE_IN];
+
+    case "wireless":
+      // APs: one PoE-in uplink + a passthrough LAN downlink.
+      if (code === "AP")
+        return [
+          ETH0_POE_IN,
+          { id: "eth1", label: "ETH 1 (LAN)", kind: "ethernet", speed: "1G" },
+        ];
+      return [ETH0_LAN];
+
+    case "access": {
+      // Card readers, door controllers, REX, locks.
+      if (code === "RDR" || code === "READER")
+        return [
+          { id: "osdp", label: "OSDP / Wiegand", kind: "serial" },
+          { id: "12vdc", label: "12 VDC", kind: "power" },
+        ];
+      if (code === "ACP" || code === "CTRL" || code === "PANEL")
+        return [
+          ETH0_POE_IN,
+          { id: "osdp", label: "OSDP Bus", kind: "serial" },
+          { id: "relay-1", label: "Relay 1 (Door)", kind: "other" },
+        ];
+      if (code === "LOCK" || code === "MAG")
+        return [
+          { id: "12vdc", label: "12 VDC", kind: "power" },
+          { id: "rex", label: "REX Input", kind: "other" },
+        ];
+      return [{ id: "wires", label: "Wired", kind: "other" }];
+    }
+
+    case "network": {
+      // Switches, routers, NIDs, APs, PoE injectors. Common sizes
+      // seeded with a generic 24-port pattern; specific models can
+      // override via an explicit `ports` field on their catalog row.
+      if (code === "SW" || code === "SWITCH")
+        return [...switchPorts(24, { poe: "out" }), ...sfpPorts(4, "10G")];
+      if (code === "RTR" || code === "ROUTER")
+        return [
+          { id: "wan", label: "WAN", kind: "ethernet", speed: "1G" },
+          ...switchPorts(4, { speed: "1G" }),
+        ];
+      if (code === "NID")
+        return [
+          { id: "fiber", label: "Fiber Demarc", kind: "fiber", pluggable: true },
+          { id: "lan", label: "LAN", kind: "ethernet", speed: "1G" },
+        ];
+      if (code === "POE" || code === "INJ")
+        return [
+          { id: "in", label: "Data In", kind: "ethernet", speed: "1G" },
+          {
+            id: "out",
+            label: "PoE+ Out",
+            kind: "ethernet",
+            speed: "1G",
+            poe: "out",
+          },
+        ];
+      // The catalog files most APs under "network" rather than
+      // "wireless"; cover both so the AP port-pair lands regardless.
+      if (code === "AP" || code === "AP-O" || code.startsWith("AP-"))
+        return [
+          ETH0_POE_IN,
+          { id: "eth1", label: "ETH 1 (LAN)", kind: "ethernet", speed: "1G" },
+        ];
+      return [ETH0_LAN];
+    }
+
+    case "broadcast":
+    case "av": {
+      // NVR / DVR have many channels + an IP uplink.
+      if (code === "NVR" || code === "DVR")
+        return [
+          {
+            id: "uplink",
+            label: "LAN",
+            kind: "ethernet",
+            speed: "1G",
+          },
+          { id: "hdmi-out", label: "HDMI Out", kind: "video" },
+        ];
+      if (code === "DISP" || code === "TV" || code === "MON")
+        return [
+          { id: "hdmi-in", label: "HDMI In", kind: "video" },
+          POWER_DC,
+        ];
+      return [
+        { id: "video", label: "Video In", kind: "video" },
+        { id: "video-out", label: "Video Out", kind: "video" },
+      ];
+    }
+
+    case "audio":
+      if (code === "MIC")
+        return [
+          { id: "xlr", label: "XLR Out", kind: "audio" },
+        ];
+      if (code === "SPK" || code === "SPKR")
+        return [
+          { id: "in", label: "Speaker In (70V)", kind: "audio" },
+        ];
+      return [
+        { id: "audio-in", label: "Audio In", kind: "audio" },
+        { id: "audio-out", label: "Audio Out", kind: "audio" },
+      ];
+
+    case "detection":
+      return [
+        { id: "signal", label: "Signal Pair", kind: "other" },
+        POWER_DC,
+      ];
+
+    case "lighting":
+      if (code === "DMX")
+        return [
+          { id: "dmx-in", label: "DMX In", kind: "serial" },
+          { id: "dmx-out", label: "DMX Thru", kind: "serial" },
+          POWER_DC,
+        ];
+      return [POWER_DC];
+
+    case "production":
+      return [
+        { id: "io", label: "I/O", kind: "other" },
+      ];
+
+    case "site":
+      return undefined;
+
+    default:
+      return undefined;
+  }
+}
+
 export const devicesById: Record<string, DeviceType> = Object.fromEntries(
-  devices.map((d) => [d.id, d]),
+  devices.map((d) => {
+    const ports = inferDefaultPorts(d);
+    return [d.id, ports ? { ...d, ports } : d];
+  }),
 );
+
+/**
+ * Resolve the effective port list for a placed device instance:
+ *   - Per-instance `instancePorts` (if set) wins outright.
+ *   - Otherwise falls back to the catalog `ports` for the device type.
+ *   - Returns undefined when neither is set so callers can drop back
+ *     to the free-text label fallback.
+ */
+export function effectiveDevicePorts(
+  deviceId: string,
+  instancePorts: PortSpec[] | undefined,
+): PortSpec[] | undefined {
+  if (instancePorts && instancePorts.length > 0) return instancePorts;
+  return devicesById[deviceId]?.ports;
+}

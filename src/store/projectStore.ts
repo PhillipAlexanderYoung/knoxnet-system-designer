@@ -9,12 +9,62 @@ import {
   saveStickyBranding,
   type BrandingConfig,
 } from "../lib/branding";
+import type { SheetSource } from "../lib/sheetSource";
+import { buildStarterTemplates } from "../reports/starterTemplates";
 
 // ───────── Types ─────────
 
 export type QualityMode = "speed" | "balanced" | "quality";
 
-export type ViewMode = "sheets" | "racks";
+export type ViewMode = "sheets" | "racks" | "diagrams";
+
+// ───────── Diagram types ─────────
+//
+// Phase 4 scaffold: a "Diagram" is a node-link view over the project's
+// devices + connections, parallel to the floor-plan sheets and rack
+// elevations. Topology is read from `Project.connections` so the same
+// graph stays in sync across the sheet editor and the diagram builder;
+// the diagram only owns layout/styling.
+//
+// Auto-routing (Manhattan / orthogonal) is deferred — when we wire
+// elkjs in, it'll populate `routedEdges[connId]` with computed polyline
+// points; until then, edges render as straight lines between node
+// centers.
+
+export interface DiagramNodePosition {
+  x: number;
+  y: number;
+}
+
+export interface DiagramNodeStyle {
+  color?: string;
+  collapsed?: boolean;
+}
+
+export type DiagramKind = "signal-flow" | "block" | "network";
+
+export type DiagramAutoLayout = "manual" | "layered" | "force";
+
+export interface Diagram {
+  id: string;
+  name: string;
+  kind: DiagramKind;
+  /** Per-device-tag XY position. New device tags added after the
+   *  diagram exists get auto-laid-out on the next open. */
+  nodePositions: Record<string, DiagramNodePosition>;
+  /** Optional per-node visual overrides. */
+  nodeStyles?: Record<string, DiagramNodeStyle>;
+  /** When set to "layered" or "force", an autoroute pass populates
+   *  `routedEdges` on save. "manual" (default) means edges stay
+   *  straight lines anchored to node centers. */
+  autoLayout?: DiagramAutoLayout;
+  /** Cached routed polylines from the last autoroute run, keyed by
+   *  connection id. Stored on the diagram (not the connection itself)
+   *  so two diagrams can route the same connection differently. */
+  routedEdges?: Record<string, { points: number[] }>;
+  createdAt: number;
+  updatedAt: number;
+}
 
 // ───────── Rack types ─────────
 
@@ -141,11 +191,30 @@ export interface Sheet {
   name: string;
   /** original filename for reference */
   fileName: string;
-  /** Object URL for this PDF file (created on ingest, lives for session) */
+  /** Object URL for this drawing's blob (created on ingest, lives for
+   *  session). Used by SVG / raster backgrounds via <img src=…> and by
+   *  PDFs as a download fallback. */
   objectUrl?: string;
-  /** Raw bytes for export/persistence */
+  /**
+   * Canonical drawing source — discriminated union covering PDF, DXF,
+   * SVG, raster, and (future) IFC. Optional for backwards-compat with
+   * v1.x projects loaded from disk before the migrator has run; the
+   * editor + persistence layer normalise pre-v2 sheets to a `pdf`
+   * source on load.
+   */
+  source?: SheetSource;
+  /**
+   * Legacy alias for `source.bytes` when `source.kind === "pdf"`. New
+   * code should prefer reading PDF bytes via `getPdfBytes(sheet)` from
+   * `lib/sheetSource.ts`; this field is kept populated for compat with
+   * existing pdf.js / pdf-lib call sites.
+   * @deprecated Use `source` instead — will be removed in a future
+   *             version once every consumer is migrated.
+   */
   pdfBytes?: Uint8Array;
-  /** PDF intrinsic page dimensions in PDF points */
+  /** Intrinsic page dimensions in source units (PDF points, DXF user
+   *  units, SVG viewBox units, or raster pixels — the calibration tool
+   *  maps to real-world feet downstream). */
   pageWidth: number;
   pageHeight: number;
   /** rendered viewport scale used to render bg canvas */
@@ -238,6 +307,256 @@ export interface DeviceCoverageOverride {
   showLabel?: boolean;
 }
 
+// ───────── System / Network configuration ─────────
+// All fields are optional — fill in what you know during design,
+// commission the rest during install. Everything flows through the
+// .knoxnet project file so the full system topology is portable.
+
+/** IP-layer network identity shared by every networked device. */
+export interface NetworkConfig {
+  dhcp?: boolean;
+  ipAddress?: string;
+  subnetMask?: string;
+  gateway?: string;
+  dns1?: string;
+  dns2?: string;
+  hostname?: string;
+  macAddress?: string;
+  vlan?: number;
+  /** HTTP management port (default 80) */
+  httpPort?: number;
+  /** HTTPS management port (default 443) */
+  httpsPort?: number;
+}
+
+/** Camera / encoder streaming and recording configuration. */
+export interface CameraStreamConfig {
+  /** Primary RTSP URI — e.g. rtsp://user:pass@192.168.1.10:554/stream1 */
+  primaryRtsp?: string;
+  /** Sub-stream / secondary RTSP URI */
+  secondaryRtsp?: string;
+  username?: string;
+  password?: string;
+  onvifEnabled?: boolean;
+  onvifPort?: number;
+  /** e.g. "4K", "1080p", "720p", "D1" */
+  resolution?: string;
+  /** e.g. "H.265", "H.264", "MJPEG" */
+  codec?: string;
+  bitrateKbps?: number;
+  fps?: number;
+  /** Tag of the NVR/DVR device this camera streams to (e.g. "NVR-01") */
+  nvrTag?: string;
+  nvrChannel?: number;
+  /** Channel name on the recorder (e.g. "Lobby East") */
+  nvrChannelName?: string;
+}
+
+/** PTZ (pan–tilt–zoom) controller parameters. */
+export interface PtzConfig {
+  enabled?: boolean;
+  /**
+   * "pelco-d" | "pelco-p" | "visca" → serial RS-485.
+   * "onvif" → control over IP (no separate port/address needed).
+   */
+  protocol?: "pelco-d" | "pelco-p" | "visca" | "onvif" | string;
+  /** TCP port for IP-PTZ or serial baud rate for RS-485 */
+  port?: number;
+  /** RS-485 unit address 1–255 */
+  address?: number;
+}
+
+/** Wireless AP configuration (network / wireless category). */
+export interface WirelessConfig {
+  ssid?: string;
+  /** Pre-shared key / WPA password */
+  password?: string;
+  /** Radio band */
+  band?: "2.4GHz" | "5GHz" | "6GHz" | "dual-band" | "tri-band" | string;
+  /** Wi-Fi security mode */
+  security?: "WPA2" | "WPA3" | "WPA2/WPA3" | "Open" | string;
+  /** SSID broadcast hidden */
+  hiddenSsid?: boolean;
+  /** Channel number (0 = auto) */
+  channel?: number;
+  /** Max associated clients */
+  maxClients?: number;
+  /** Tag of the controller / cloud managing this AP (e.g. "CTRL-01") */
+  controllerTag?: string;
+}
+
+/** Managed switch / router configuration (network category). */
+export interface SwitchConfig {
+  /** Number of ports */
+  portCount?: number;
+  /** Comma-separated list of active VLANs, e.g. "1, 10, 20, 100" */
+  vlans?: string;
+  /** Management / native VLAN */
+  managementVlan?: number;
+  /** Total PoE power budget in watts */
+  poeBudgetW?: number;
+  /** Uplink port label, e.g. "Port 49 (SFP)" */
+  uplinkPort?: string;
+  /** Spanning-tree protocol role */
+  stpRole?: "root" | "switch" | "disabled" | string;
+  /** Controller or cloud tag managing this switch */
+  controllerTag?: string;
+}
+
+/** Access control device configuration (access category). */
+export interface AccessControlConfig {
+  /** Reader/controller protocol */
+  protocol?: "wiegand-26" | "wiegand-34" | "osdp-v1" | "osdp-v2" | "f2f" | string;
+  /** Door / opening this device controls or monitors */
+  doorName?: string;
+  /** Security zone or partition */
+  zone?: string;
+  /** Door relay normally-open or normally-closed */
+  relayType?: "NO" | "NC" | string;
+  /** Strike / lock hold time in milliseconds */
+  holdTimeMs?: number;
+  /** Tag of the access controller panel this reader reports to */
+  controllerTag?: string;
+  /** Reader address on OSDP bus (0–126) */
+  osdpAddress?: number;
+  /** Wiegand bit format if not standard 26 or 34 */
+  wiegandFormat?: string;
+}
+
+/**
+ * Full commissioning / system-design record for a single placed device.
+ *
+ * Category guidance:
+ *   cameras            → network + streams + ptz + physical
+ *   network (APs)      → network + wireless + physical
+ *   network (switches) → network + switchConfig + physical
+ *   access             → network + accessControl + physical
+ *   av / broadcast     → network + streams + physical
+ *   detection / audio /
+ *   lighting / site    → network (if IP-based) + physical
+ */
+export interface DeviceSystemConfig {
+  // ── Network (every IP device) ─────────────────────────────
+  network?: NetworkConfig;
+
+  // ── Cameras / encoders / NVRs / AV decoders ───────────────
+  streams?: CameraStreamConfig;
+  /** PTZ — cameras only */
+  ptz?: PtzConfig;
+
+  // ── Wireless APs ──────────────────────────────────────────
+  wireless?: WirelessConfig;
+
+  // ── Managed switches, routers, NIDs ───────────────────────
+  switchConfig?: SwitchConfig;
+
+  // ── Card readers, door controllers, locks ─────────────────
+  accessControl?: AccessControlConfig;
+
+  // ── Physical / install (all devices) ─────────────────────
+  mountType?: string;
+  switchPort?: string;
+  poeClass?: number;
+  cableTag?: string;
+
+  // ── Asset tracking (all devices) ─────────────────────────
+  manufacturer?: string;
+  model?: string;
+  serialNumber?: string;
+  firmwareVersion?: string;
+  managementUrl?: string;
+  assetTag?: string;
+  installedBy?: string;
+  installedAt?: string;
+  warrantyExpiry?: string;
+}
+
+/**
+ * Structured port description for a device type or per-instance
+ * override. Every device with physical interfaces should expose a
+ * `ports` array on its `DeviceType` so the properties panel, the
+ * report engine, and (future) signal-flow autoroute can reason about
+ * connections in terms of real ports instead of free-text strings.
+ *
+ * Examples:
+ *   { id: "eth0", label: "ETH 0 (PoE)", kind: "ethernet", poe: "in", speed: "1G" }
+ *   { id: "sfp1", label: "SFP+ 1",      kind: "fiber",    speed: "10G", pluggable: true }
+ *   { id: "rs485-a", label: "RS-485 A", kind: "serial" }
+ */
+export type PortKind =
+  | "ethernet"
+  | "fiber"
+  | "serial"
+  | "coax"
+  | "audio"
+  | "video"
+  | "power"
+  | "wireless"
+  | "other";
+
+export interface PortSpec {
+  /** Stable id used in DeviceConnection.fromPortId / toPortId. */
+  id: string;
+  /** Human label shown in dropdowns and reports (e.g. "ETH 0 (PoE+)"). */
+  label: string;
+  kind: PortKind;
+  /** PoE direction — `in` = port accepts power, `out` = port sources
+   *  power, `passthrough` = port loops PoE through (powered injector). */
+  poe?: "in" | "out" | "passthrough";
+  /** Negotiated speed shorthand (e.g. "100M", "1G", "2.5G", "10G"). */
+  speed?: string;
+  /** True for pluggable transceivers / removable modules (SFP, QSFP). */
+  pluggable?: boolean;
+  /** Free-form notes — surfaced in the panel tooltip. */
+  notes?: string;
+}
+
+/**
+ * A directed logical connection between two device instances placed
+ * on any sheet in the project.
+ *
+ * Devices are identified by their canvas `tag` (e.g. "CAM-01", "SW-01")
+ * so connections survive device moves between sheets.
+ *
+ * v2.0: structured port ids land alongside the existing free-text
+ * labels. When `fromPortId` / `toPortId` is present, the report engine
+ * + autoroute can resolve the actual port; the string labels stay so
+ * legacy projects render identically and devices without a `ports`
+ * spec still allow ad-hoc text.
+ *
+ * Examples:
+ *   CAM-01 ETH0   → SW-01 Port 4    (camera to switch port)
+ *   AP-03  LAN    → POE-01 OUT      (AP to PoE injector)
+ *   POE-01 IN     → SW-02 Port 18   (PoE injector uplink)
+ *   CAM-07 RS-485 → PTZ-01 RS-485   (serial PTZ bus)
+ */
+export interface DeviceConnection {
+  id: string;
+  /** Tag of the source device, e.g. "CAM-01" */
+  fromTag: string;
+  /** Structured port id on the source (resolves against the device's
+   *  `ports` spec). Falls back to `fromPort` string when undefined. */
+  fromPortId?: string;
+  /** Interface / port label on the source, e.g. "ETH0", "LAN", "RS-485" */
+  fromPort?: string;
+  /** Tag of the destination device, e.g. "SW-01" */
+  toTag: string;
+  /** Structured port id on the destination. */
+  toPortId?: string;
+  /** Interface / port label on the destination, e.g. "Port 12", "GE 1/0/1" */
+  toPort?: string;
+  /**
+   * Physical transmission medium.
+   * Use standard shorthand: "cat6", "cat6a", "fiber-sm", "fiber-mm",
+   * "coax", "rs485", "rs232", "wireless", or any custom string.
+   */
+  medium?: string;
+  /** ID of the CableMarkup on canvas representing this physical run */
+  cableMarkupId?: string;
+  label?: string;
+  notes?: string;
+}
+
 export interface DeviceMarkup extends BaseMarkup {
   kind: "device";
   deviceId: string; // ref into devices.ts
@@ -257,6 +576,15 @@ export interface DeviceMarkup extends BaseMarkup {
   costOverride?: number;
   /** Per-instance coverage overrides (FOV / signal / beam visualization) */
   coverage?: DeviceCoverageOverride;
+  /** Full network / commissioning record for this device instance */
+  systemConfig?: DeviceSystemConfig;
+  /**
+   * Per-instance port overrides. When set, these REPLACE the device
+   * type's bundled `ports` spec — handy for one-off devices that have
+   * SFP modules inserted, custom port labels, or unusual configurations
+   * the bundled spec can't anticipate. Most devices won't need this.
+   */
+  instancePorts?: PortSpec[];
 }
 
 export interface CableMarkup extends BaseMarkup {
@@ -439,6 +767,88 @@ export const defaultBidExportVisibility: BidExportVisibility = {
   margin: false,
 };
 
+// ───────── Custom report templates ─────────
+//
+// A report template is a saved "view" over the project — pick a scope
+// (devices / cables / connections / racks / sheets / ports), filter to
+// the subset you care about, choose columns + grouping + sort, and
+// pick one or more output formats. The same template can be re-run any
+// time the design changes; the engine is pure so results never go stale.
+
+export type ReportScope =
+  | "devices"
+  | "cables"
+  | "connections"
+  | "racks"
+  | "rackPlacements"
+  | "sheets"
+  | "ports";
+
+export type ReportFilterOp =
+  | "eq"
+  | "neq"
+  | "in"
+  | "contains"
+  | "startsWith"
+  | "gte"
+  | "lte"
+  | "exists"
+  | "missing"
+  | "regex";
+
+export interface ReportFilter {
+  /** Dotted field path, e.g. `"systemConfig.network.ipAddress"`. */
+  field: string;
+  op: ReportFilterOp;
+  value?: unknown;
+}
+
+export type ReportColumnFormat =
+  | "text"
+  | "number"
+  | "date"
+  | "ip"
+  | "mac"
+  | "link"
+  | "bool";
+
+export interface ReportColumn {
+  /** Dotted field path — same syntax as filters. */
+  field: string;
+  /** Display header (defaults to the field catalog label). */
+  header?: string;
+  /** Optional width hint in pixels — passed through to XLSX/PDF
+   *  exporters, ignored by JSON/CSV. */
+  width?: number;
+  /** Render hint — controls how the cell is formatted in non-tabular
+   *  exports (PDF/HTML/Markdown). */
+  format?: ReportColumnFormat;
+}
+
+export type ReportFormat = "pdf" | "xlsx" | "csv" | "json" | "md" | "html";
+
+export interface ReportTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  scope: ReportScope;
+  filters: ReportFilter[];
+  columns: ReportColumn[];
+  /** Dotted-path group fields (multi-level grouping). Empty / undefined
+   *  means a single ungrouped row set. */
+  groupBy?: string[];
+  /** Stable sort key list. */
+  sortBy?: Array<{ field: string; dir: "asc" | "desc" }>;
+  /** Output formats to generate when the user clicks "Generate". */
+  formats: ReportFormat[];
+  /** Branding overrides for non-tabular outputs (PDF, HTML). */
+  branding?: {
+    useProjectBranding?: boolean;
+    title?: string;
+    footer?: string;
+  };
+}
+
 export interface Project {
   id: string;
   meta: ProjectMeta;
@@ -462,6 +872,25 @@ export interface Project {
   coverPage?: CoverPageSettings;
   /** Which rollup lines are revealed on customer-facing exports. */
   bidExportVisibility?: BidExportVisibility;
+  /**
+   * Logical connections between device instances across all sheets.
+   * Models camera→switch, AP→PoE injector, controller→reader, etc.
+   * Keyed by device tag so connections survive sheet reassignment.
+   */
+  connections?: DeviceConnection[];
+  /**
+   * Saved custom report templates. Driven by the Reports tab in the
+   * left rail; each template carries its own scope + filter + column
+   * choices and one or more output formats.
+   */
+  reports?: ReportTemplate[];
+  /**
+   * Saved signal-flow / block / network diagrams. Topology is read
+   * from `connections`; this array only owns layout + per-diagram
+   * styling. Phase 4 ships with manual layout; future phases wire in
+   * elkjs for auto-routing.
+   */
+  diagrams?: Diagram[];
   createdAt: number;
   updatedAt: number;
 }
@@ -491,6 +920,7 @@ interface State {
   view: ViewMode;
   activeSheetId: string | null;
   activeRackId: string | null;
+  activeDiagramId: string | null;
   activeTool: ToolId;
   activeDeviceId: string | null;
   activeCableId: string | null;
@@ -637,6 +1067,31 @@ interface State {
   toggleLayer: (id: LayerId) => void;
   setLayerLocked: (id: LayerId, locked: boolean) => void;
 
+  /** Update (or clear) the full system/commissioning config for a device markup */
+  setDeviceSystemConfig: (markupId: string, config: DeviceSystemConfig | undefined) => void;
+
+  /** Project-level device connections */
+  addConnection: (conn: DeviceConnection) => void;
+  updateConnection: (id: string, patch: Partial<DeviceConnection>) => void;
+  removeConnection: (id: string) => void;
+
+  /** Custom report templates */
+  addReport: (template: ReportTemplate) => void;
+  updateReport: (id: string, patch: Partial<ReportTemplate>) => void;
+  removeReport: (id: string) => void;
+  duplicateReport: (id: string) => string | null;
+
+  /** Signal-flow / block diagrams */
+  addDiagram: (diagram?: Partial<Diagram>) => string;
+  updateDiagram: (id: string, patch: Partial<Diagram>) => void;
+  removeDiagram: (id: string) => void;
+  setActiveDiagram: (id: string | null) => void;
+  setDiagramNodePosition: (
+    diagramId: string,
+    tag: string,
+    pos: DiagramNodePosition,
+  ) => void;
+
   setCalibration: (sheetId: string, c: Calibration | undefined) => void;
   setCursor: (p: { x: number; y: number } | null) => void;
   setViewport: (v: Partial<{ scale: number; x: number; y: number }>) => void;
@@ -684,6 +1139,7 @@ const blankProject = (meta?: Partial<ProjectMeta>): Project => {
     racks: [],
     bidDefaults: { ...defaultBidDefaults },
     branding: stickyBranding,
+    reports: buildStarterTemplates(),
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -695,6 +1151,7 @@ export const useProjectStore = create<State>()(
     view: "sheets",
     activeSheetId: null,
     activeRackId: null,
+    activeDiagramId: null,
     activeTool: "select",
     activeDeviceId: null,
     activeCableId: "cat6",
@@ -728,10 +1185,17 @@ export const useProjectStore = create<State>()(
 
     loadProject: (p) =>
       set({
-        // Backfill racks array for projects saved before the rack feature
-        project: { ...p, racks: p.racks ?? [] },
+        // Backfill arrays for projects saved before each feature
+        // landed, so existing records keep opening cleanly.
+        project: {
+          ...p,
+          racks: p.racks ?? [],
+          reports: p.reports && p.reports.length > 0 ? p.reports : buildStarterTemplates(),
+          diagrams: p.diagrams ?? [],
+        },
         activeSheetId: p.sheets[0]?.id ?? null,
         activeRackId: (p.racks?.[0]?.id) ?? null,
+        activeDiagramId: p.diagrams?.[0]?.id ?? null,
         selectedMarkupIds: [],
       }),
 
@@ -1375,6 +1839,203 @@ export const useProjectStore = create<State>()(
         layers: s.layers.map((l) => (l.id === id ? { ...l, locked } : l)),
       })),
 
+    setDeviceSystemConfig: (markupId, config) =>
+      set((s) => {
+        if (!s.project || !s.activeSheetId) return s;
+        return {
+          project: {
+            ...s.project,
+            sheets: s.project.sheets.map((sh) =>
+              sh.id === s.activeSheetId
+                ? {
+                    ...sh,
+                    markups: sh.markups.map((m) =>
+                      m.id === markupId && m.kind === "device"
+                        ? { ...m, systemConfig: config }
+                        : m,
+                    ),
+                  }
+                : sh,
+            ),
+            updatedAt: Date.now(),
+          },
+        };
+      }),
+
+    addConnection: (conn) =>
+      set((s) => {
+        if (!s.project) return s;
+        return {
+          project: {
+            ...s.project,
+            connections: [...(s.project.connections ?? []), conn],
+            updatedAt: Date.now(),
+          },
+        };
+      }),
+
+    updateConnection: (id, patch) =>
+      set((s) => {
+        if (!s.project) return s;
+        return {
+          project: {
+            ...s.project,
+            connections: (s.project.connections ?? []).map((c) =>
+              c.id === id ? { ...c, ...patch } : c,
+            ),
+            updatedAt: Date.now(),
+          },
+        };
+      }),
+
+    removeConnection: (id) =>
+      set((s) => {
+        if (!s.project) return s;
+        return {
+          project: {
+            ...s.project,
+            connections: (s.project.connections ?? []).filter((c) => c.id !== id),
+            updatedAt: Date.now(),
+          },
+        };
+      }),
+
+    addReport: (template) =>
+      set((s) => {
+        if (!s.project) return s;
+        return {
+          project: {
+            ...s.project,
+            reports: [...(s.project.reports ?? []), template],
+            updatedAt: Date.now(),
+          },
+        };
+      }),
+
+    updateReport: (id, patch) =>
+      set((s) => {
+        if (!s.project) return s;
+        return {
+          project: {
+            ...s.project,
+            reports: (s.project.reports ?? []).map((r) =>
+              r.id === id ? { ...r, ...patch } : r,
+            ),
+            updatedAt: Date.now(),
+          },
+        };
+      }),
+
+    removeReport: (id) =>
+      set((s) => {
+        if (!s.project) return s;
+        return {
+          project: {
+            ...s.project,
+            reports: (s.project.reports ?? []).filter((r) => r.id !== id),
+            updatedAt: Date.now(),
+          },
+        };
+      }),
+
+    duplicateReport: (id) => {
+      const s = get();
+      if (!s.project) return null;
+      const orig = s.project.reports?.find((r) => r.id === id);
+      if (!orig) return null;
+      const newId = uid();
+      const copy: ReportTemplate = {
+        ...orig,
+        id: newId,
+        name: `${orig.name} (copy)`,
+      };
+      set({
+        project: {
+          ...s.project,
+          reports: [...(s.project.reports ?? []), copy],
+          updatedAt: Date.now(),
+        },
+      });
+      return newId;
+    },
+
+    addDiagram: (diagram) => {
+      const id = uid();
+      set((s) => {
+        if (!s.project) return s;
+        const existing = s.project.diagrams ?? [];
+        const n = existing.length + 1;
+        const newDiagram: Diagram = {
+          id,
+          name: diagram?.name ?? `Diagram ${n}`,
+          kind: diagram?.kind ?? "signal-flow",
+          nodePositions: diagram?.nodePositions ?? {},
+          nodeStyles: diagram?.nodeStyles,
+          autoLayout: diagram?.autoLayout ?? "manual",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        return {
+          project: {
+            ...s.project,
+            diagrams: [...existing, newDiagram],
+            updatedAt: Date.now(),
+          },
+          activeDiagramId: id,
+          view: "diagrams",
+        };
+      });
+      return id;
+    },
+
+    updateDiagram: (id, patch) =>
+      set((s) => {
+        if (!s.project) return s;
+        return {
+          project: {
+            ...s.project,
+            diagrams: (s.project.diagrams ?? []).map((d) =>
+              d.id === id ? { ...d, ...patch, updatedAt: Date.now() } : d,
+            ),
+            updatedAt: Date.now(),
+          },
+        };
+      }),
+
+    removeDiagram: (id) =>
+      set((s) => {
+        if (!s.project) return s;
+        const diagrams = (s.project.diagrams ?? []).filter((d) => d.id !== id);
+        const newActive =
+          s.activeDiagramId === id ? (diagrams[0]?.id ?? null) : s.activeDiagramId;
+        return {
+          project: { ...s.project, diagrams, updatedAt: Date.now() },
+          activeDiagramId: newActive,
+        };
+      }),
+
+    setActiveDiagram: (id) => set({ activeDiagramId: id }),
+
+    setDiagramNodePosition: (diagramId, tag, pos) =>
+      set((s) => {
+        if (!s.project) return s;
+        return {
+          project: {
+            ...s.project,
+            diagrams: (s.project.diagrams ?? []).map((d) =>
+              d.id === diagramId
+                ? {
+                    ...d,
+                    nodePositions: { ...d.nodePositions, [tag]: pos },
+                    updatedAt: Date.now(),
+                  }
+                : d,
+            ),
+            updatedAt: Date.now(),
+          },
+        };
+      }),
+
     setCalibration: (sheetId, c) =>
       set((s) => {
         if (!s.project) return s;
@@ -1442,4 +2103,11 @@ export const selectActiveSheet = (s: State): Sheet | null => {
 export const selectActiveRack = (s: State): Rack | null => {
   if (!s.project || !s.activeRackId) return null;
   return s.project.racks?.find((r) => r.id === s.activeRackId) ?? null;
+};
+
+export const selectActiveDiagram = (s: State): Diagram | null => {
+  if (!s.project || !s.activeDiagramId) return null;
+  return (
+    s.project.diagrams?.find((d) => d.id === s.activeDiagramId) ?? null
+  );
 };

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { Stage, Layer, Rect } from "react-konva";
 import Konva from "konva";
 import { useProjectStore, type Sheet } from "../store/projectStore";
-import { PdfBackground } from "./PdfBackground";
+import { SheetBackground } from "./SheetBackground";
 import { MarkupLayer } from "./MarkupLayer";
 import { MaskLayer } from "./MaskLayer";
 import { BrandPreview } from "./BrandPreview";
@@ -202,7 +202,7 @@ export function Editor({ sheet, onCalibrateConfirm }: Props) {
             setPanning(false);
           }}
         >
-          {/* Background PDF page */}
+          {/* Background drawing (PDF / DXF / SVG / raster) */}
           <Layer
             listening={false}
             scaleX={viewport.scale}
@@ -210,7 +210,7 @@ export function Editor({ sheet, onCalibrateConfirm }: Props) {
             x={viewport.x}
             y={viewport.y}
           >
-            <PdfBackground sheet={sheet} viewportScale={viewport.scale} />
+            <SheetBackground sheet={sheet} viewportScale={viewport.scale} />
           </Layer>
 
           {/* Markup overlay. Order matters:
