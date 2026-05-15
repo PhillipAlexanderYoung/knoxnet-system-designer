@@ -78,6 +78,168 @@ Typical workflow:
 12. **Export** a branded markup PDF, bid PDF, editable XLSX workbook,
     any saved custom report, or a portable `.knoxnet` project file.
 
+## How It All Connects
+
+Knoxnet is not just a markup tool — every placed device is a **rich
+structured record** that the rest of the app reads from. There is one
+source of truth for the system; the floor-plan sheets, the rack
+elevations, the signal-flow diagrams, the reports, and the bid are all
+just **different views over the same underlying device + connection
+graph**.
+
+```mermaid
+flowchart LR
+  Devices[Devices<br/>tag · category · position<br/>+ systemConfig + ports]
+  Connections[Connections<br/>fromTag.port → toTag.port<br/>+ medium]
+  Cables[Cable runs<br/>polyline + slack]
+  Sheets[Sheet view<br/>floor plans]
+  Racks[Rack view<br/>U elevations]
+  Diagrams[Diagrams view<br/>signal-flow / block]
+  Reports[Report builder<br/>any field · any format]
+  Bid[Bid engine<br/>BOM + labor + totals]
+  Auto[Future:<br/>autoroute · QR · BIM sync]
+
+  Sheets -- edit --> Devices
+  Sheets -- edit --> Cables
+  Racks -- edit --> Devices
+  Devices --> Connections
+  Connections --> Diagrams
+  Connections --> Reports
+  Devices --> Reports
+  Devices --> Bid
+  Cables --> Bid
+  Connections --> Auto
+  Devices --> Auto
+```
+
+So when you type an IP into the Properties panel on Sheet L-1, that IP
+is already on the signal-flow diagram, already in the VLAN report,
+already in the camera commissioning sheet, and already inside the
+`.knoxnet` file you share with the install crew. No re-entry, no
+syncing.
+
+### What a placed device actually carries
+
+Every `DeviceMarkup` instance carries the position you placed it at,
+**plus a full commissioning block** in `systemConfig` covering:
+
+- **Network** — DHCP / IP / subnet / gateway / DNS / hostname / MAC /
+  VLAN / HTTP & HTTPS management ports.
+- **Camera streams** — primary + secondary RTSP, ONVIF, codec,
+  resolution, bitrate, FPS, NVR tag + channel.
+- **PTZ** — protocol (Pelco-D / -P, VISCA, ONVIF), serial address,
+  baud / port.
+- **Wireless** — SSID, band, channel, security mode, controller tag,
+  max clients.
+- **Switch / router** — port count, PoE budget, active VLANs, mgmt VLAN,
+  uplink port, STP role, controller tag.
+- **Access control** — door name, zone, protocol (OSDP / Wiegand),
+  relay type, hold time, controller tag, OSDP address.
+- **Physical install** — mount type, PoE class, switch port label,
+  cable tag.
+- **Asset tracking** — manufacturer, model, serial, firmware, asset
+  tag, install date, installed-by, warranty expiry, management URL.
+- **Structured physical ports** — every device declares its real ports
+  (ETH0 PoE-in, RS-485, SFP+, audio I/O, …) so connections reference
+  actual port IDs instead of free-text strings.
+
+Devices are linked together by a project-wide **`connections` graph**
+(`fromTag.port → toTag.port` + medium). The graph is keyed by tag, so
+moving a device between sheets, renaming a sheet, or reshuffling
+floors **never breaks the topology**.
+
+### Why this matters for what's coming next
+
+The signal-flow / block-diagram view ships as a **scaffold today** —
+draggable nodes, straight-line edges, multi-diagram support — but the
+underlying data is already complete. The next phase wires
+[elkjs](https://github.com/kieler/elkjs) (layered + orthogonal layout)
+over the same `connections` graph, so auto-routing slots in without
+re-modeling anything. The structured ports + per-device port
+directions (PoE in/out, RS-485 master/slave) are exactly what the
+auto-router needs to pick handle anchors and avoid crossing edges. The
+identical graph is also what a future BIM round-trip, QR-code asset
+tagger, or live network-discovery integration will consume.
+
+## The `.knoxnet` Project File
+
+`File → Export → Project File (.knoxnet)` produces a **single
+self-contained JSON file** that carries everything: all sheets (with
+their original PDF / DXF / SVG / raster bytes embedded), every markup,
+every device with its full commissioning record, every port spec,
+every connection, every rack + placement, every saved report template,
+every diagram layout, and your project + branding settings.
+
+You can email it, drop it in Drive / Slack / SharePoint, commit it to
+git, or hand it to a collaborator. They open it in their browser and
+get the **exact same project**, fully editable, with no network
+roundtrip.
+
+```jsonc
+{
+  "knoxnet": "2.0",
+  "exportedAt": "2026-05-15T18:42:00.000Z",
+  "project": {
+    "id": "abc12345",
+    "meta": { "projectName": "Downtown Stadium", "client": "...", "...": "..." },
+    "sheets": [
+      {
+        "id": "sheet01",
+        "name": "L1 - Camera Layout",
+        "sourceSerialized": {
+          "kind": "pdf",
+          "bytesB64": "JVBERi0xLjQK..."  // or "dxf" / "svg" / "raster"
+        },
+        "markups": [
+          {
+            "kind": "device",
+            "tag": "CAM-04",
+            "deviceId": "cam-dome",
+            "x": 412.3,
+            "y": 286.1,
+            "systemConfig": {
+              "manufacturer": "Hikvision",
+              "model": "DS-2CD2T43G2-2I",
+              "network": {
+                "ipAddress": "10.20.30.44",
+                "vlan": 30,
+                "macAddress": "aa:bb:cc:dd:ee:04"
+              },
+              "streams": { "primaryRtsp": "rtsp://...", "nvrTag": "NVR-01", "nvrChannel": 4 },
+              "poeClass": 3,
+              "switchPort": "SW-01 · Port 12"
+            }
+          }
+        ]
+      }
+    ],
+    "connections": [
+      { "fromTag": "CAM-04", "fromPortId": "eth0",
+        "toTag": "SW-01", "toPortId": "port-12", "medium": "cat6" }
+    ],
+    "racks": [ /* ... */ ],
+    "reports": [ /* saved report templates */ ],
+    "diagrams": [ /* node positions per diagram */ ],
+    "branding": { /* ... */ }
+  }
+}
+```
+
+Highlights:
+
+- **Drawing bytes travel with the file.** A `.knoxnet` is not a manifest
+  pointing at remote PDFs — every source drawing is base64-encoded
+  inline, so the recipient never has to re-import anything.
+- **v1 ↔ v2 migration is transparent.** Legacy `.knoxnet` files from
+  the PDF-only release auto-promote to v2 on open; nothing manual.
+- **Round-trips losslessly.** Export, re-import, export again — the
+  file is byte-identical except for the `exportedAt` timestamp.
+- **Apache-2.0 + JSON.** The schema is in
+  [`src/lib/projectFile.ts`](src/lib/projectFile.ts) and
+  [`src/store/projectStore.ts`](src/store/projectStore.ts) — go wild,
+  pipe it through your own tools, build a server-side analyzer, train
+  a model on it. It's your data.
+
 ## Who It's For
 
 - AV, security, low-voltage, and network system designers.
@@ -87,6 +249,8 @@ Typical workflow:
   while they sketch.
 - Commissioning crews who need real per-device IP / VLAN / port records
   generated as a printable sheet on day one.
+- Engineers shipping signal-flow / block diagrams that stay in sync
+  with the floor plan.
 - Small teams that prefer a local-first browser tool over an
   account-based hosted app.
 
