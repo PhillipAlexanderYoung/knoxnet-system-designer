@@ -22,6 +22,10 @@ const clamp = (value: number, min: number, max: number) =>
 const finiteOr = (value: unknown, fallback: number) =>
   typeof value === "number" && Number.isFinite(value) ? value : fallback;
 
+export function clampCanvasScale(scale: number) {
+  return clamp(scale, MIN_CANVAS_SCALE, MAX_CANVAS_SCALE);
+}
+
 export function normalizeCanvasViewport(
   viewport: Partial<CanvasViewport> | null | undefined,
   fallback: CanvasViewport = DEFAULT_CANVAS_VIEWPORT,
@@ -34,6 +38,35 @@ export function normalizeCanvasViewport(
     x: clamp(x, -MAX_CANVAS_PAN, MAX_CANVAS_PAN),
     y: clamp(y, -MAX_CANVAS_PAN, MAX_CANVAS_PAN),
   };
+}
+
+export function panCanvasViewport(
+  viewport: CanvasViewport,
+  delta: { x: number; y: number },
+): CanvasViewport {
+  return normalizeCanvasViewport({
+    ...viewport,
+    x: viewport.x + delta.x,
+    y: viewport.y + delta.y,
+  }, viewport);
+}
+
+export function zoomCanvasViewportAt(
+  viewport: CanvasViewport,
+  center: { x: number; y: number },
+  nextScale: number,
+): CanvasViewport {
+  const base = normalizeCanvasViewport(viewport);
+  const scale = clampCanvasScale(nextScale);
+  const sheetPoint = {
+    x: (center.x - base.x) / base.scale,
+    y: (center.y - base.y) / base.scale,
+  };
+  return normalizeCanvasViewport({
+    scale,
+    x: center.x - sheetPoint.x * scale,
+    y: center.y - sheetPoint.y * scale,
+  }, base);
 }
 
 function storage(): Storage | null {

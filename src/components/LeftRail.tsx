@@ -135,12 +135,14 @@ export function LeftRail({ className = "" }: { className?: string }) {
             <p className="text-[10px] text-ink-500 leading-snug px-0.5">
               PDF · DXF · SVG · PNG · JPG · WebP · TIFF
             </p>
-            <label className="btn-ghost w-full justify-center cursor-pointer text-signal-green hover:text-signal-green border border-signal-green/20 hover:border-signal-green/50 rounded-lg py-1.5 text-xs">
+            <label
+              className="btn-ghost w-full justify-center cursor-pointer text-signal-green hover:text-signal-green border border-signal-green/20 hover:border-signal-green/50 rounded-lg py-1.5 text-xs"
+              title="Allows any file so iOS can select .knoxnet, then validates the project contents."
+            >
               <Share2 className="w-3.5 h-3.5" />
               Open .knoxnet
               <input
                 type="file"
-                accept=".knoxnet,application/json"
                 className="hidden"
                 onChange={(e) => onOpenProjectFile(e.target.files)}
               />

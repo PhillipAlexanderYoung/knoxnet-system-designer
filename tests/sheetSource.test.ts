@@ -39,6 +39,10 @@ describe("detectSourceKind", () => {
     expect(detectSourceKind("model.rvt")).toBe(null);
     expect(detectSourceKind("notes.txt")).toBe(null);
   });
+  it("does not classify project files as drawing imports", () => {
+    expect(detectSourceKind("shared.knoxnet", "")).toBeNull();
+    expect(detectSourceKind("shared.knoxnet", "application/json")).toBeNull();
+  });
 });
 
 describe("base64 round-trip", () => {

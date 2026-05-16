@@ -133,3 +133,9 @@ body,
   );
   background-size: 24px 24px;
 }
+
+.canvas-touch-surface,
+.canvas-touch-surface canvas {
+  touch-action: none;
+  overscroll-behavior: contain;
+}

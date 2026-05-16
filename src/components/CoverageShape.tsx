@@ -36,6 +36,15 @@ export function CoverageShape({
   selected = false,
 }: Props) {
   const { shape, color, opacity } = coverage;
+  if (
+    !Number.isFinite(x) ||
+    !Number.isFinite(y) ||
+    !Number.isFinite(rangePts) ||
+    rangePts <= 0 ||
+    !Number.isFinite(rotation)
+  ) {
+    return null;
+  }
   const stroke = color;
   const fill = color;
   const strokeOp = selected ? 0.85 : 0.5;
@@ -79,8 +88,10 @@ export function CoverageShape({
 
   if (shape === "sector" || shape === "beam") {
     const sweep = coverage.angle;
+    if (!Number.isFinite(sweep) || sweep <= 0) return null;
     const start = konvaSectorStart(rotation, sweep);
-    const apex = Math.max(0, Math.min(apexOffsetPts, rangePts * 0.4));
+    const apexOffset = Number.isFinite(apexOffsetPts) ? apexOffsetPts : 0;
+    const apex = Math.max(0, Math.min(apexOffset, rangePts * 0.4));
 
     // Quality zones — replace the soft inner wedge with three opacity bands.
     const useZones = coverage.showQualityZones && shape === "sector";

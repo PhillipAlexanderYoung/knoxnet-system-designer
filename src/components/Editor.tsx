@@ -10,7 +10,12 @@ import { ZoomCluster } from "./ZoomCluster";
 import { SelectionActionBar } from "./SelectionActionBar";
 import { MaskActionBar } from "./MaskActionBar";
 import { useToolGesture } from "../hooks/useToolGesture";
-import { saveCanvasViewport } from "../lib/canvasViewport";
+import {
+  panCanvasViewport,
+  saveCanvasViewport,
+  zoomCanvasViewportAt,
+  type CanvasViewport,
+} from "../lib/canvasViewport";
 
 interface Props {
   sheet: Sheet;
@@ -31,6 +36,20 @@ export function Editor({ sheet, onCalibrateConfirm }: Props) {
   const totalSheets = project?.sheets.length ?? 1;
   const [panning, setPanning] = useState(false);
   const panStart = useRef<{ x: number; y: number; stageX: number; stageY: number } | null>(null);
+  const touchGesture = useRef<
+    | {
+        mode: "pan";
+        startCenter: { x: number; y: number };
+        startViewport: CanvasViewport;
+      }
+    | {
+        mode: "pinch";
+        startCenter: { x: number; y: number };
+        startDistance: number;
+        startViewport: CanvasViewport;
+      }
+    | null
+  >(null);
   const [spaceHeld, setSpaceHeld] = useState(false);
   const latestViewportRef = useRef(viewport);
   const { rectHandlers, preview } = useToolGesture(sheet, onCalibrateConfirm);
@@ -123,17 +142,11 @@ export function Editor({ sheet, onCalibrateConfirm }: Props) {
       pointer = { x: native.clientX - rect.left, y: native.clientY - rect.top };
     }
     if (!pointer) return;
-    const mousePointTo = {
-      x: (pointer.x - viewport.x) / oldScale,
-      y: (pointer.y - viewport.y) / oldScale,
-    };
     const direction = e.evt.deltaY > 0 ? -1 : 1;
     const factor = e.evt.deltaY === 0 ? 1 : 1 + 0.12 * direction;
     const newScale = Math.max(0.05, Math.min(20, oldScale * factor));
     setViewport({
-      scale: newScale,
-      x: pointer.x - mousePointTo.x * newScale,
-      y: pointer.y - mousePointTo.y * newScale,
+      ...zoomCanvasViewportAt(viewport, pointer, newScale),
     });
   };
 
@@ -201,6 +214,113 @@ export function Editor({ sheet, onCalibrateConfirm }: Props) {
     panStart.current = null;
   };
 
+  const isCoarsePointer = () =>
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(hover: none) and (pointer: coarse)").matches;
+
+  const touchPointsFor = (stage: Konva.Stage, touches: TouchList) => {
+    const rect = stage.container().getBoundingClientRect();
+    return Array.from(touches).map((touch) => ({
+      x: touch.clientX - rect.left,
+      y: touch.clientY - rect.top,
+    }));
+  };
+
+  const centerOf = (points: { x: number; y: number }[]) => ({
+    x: points.reduce((sum, p) => sum + p.x, 0) / points.length,
+    y: points.reduce((sum, p) => sum + p.y, 0) / points.length,
+  });
+
+  const distanceBetween = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+    Math.hypot(b.x - a.x, b.y - a.y);
+
+  const stopTouchDefaults = (e: Konva.KonvaEventObject<TouchEvent>) => {
+    e.cancelBubble = true;
+    e.evt.preventDefault();
+    e.evt.stopPropagation();
+  };
+
+  const onTouchStart = (e: Konva.KonvaEventObject<TouchEvent>) => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const touches = e.evt.touches;
+    if (touches.length >= 2) {
+      const points = touchPointsFor(stage, touches);
+      const distance = distanceBetween(points[0], points[1]);
+      if (!Number.isFinite(distance) || distance <= 0) return;
+      stage.stopDrag();
+      e.target?.stopDrag?.();
+      touchGesture.current = {
+        mode: "pinch",
+        startCenter: centerOf(points),
+        startDistance: distance,
+        startViewport: latestViewportRef.current,
+      };
+      setPanning(false);
+      panStart.current = null;
+      stopTouchDefaults(e);
+      return;
+    }
+
+    const shouldPan =
+      activeTool === "pan" ||
+      (activeTool === "select" && isCoarsePointer() && e.target === stage);
+    if (!shouldPan || touches.length !== 1) return;
+
+    const [point] = touchPointsFor(stage, touches);
+    touchGesture.current = {
+      mode: "pan",
+      startCenter: point,
+      startViewport: latestViewportRef.current,
+    };
+    setPanning(true);
+    stopTouchDefaults(e);
+  };
+
+  const onTouchMove = (e: Konva.KonvaEventObject<TouchEvent>) => {
+    const stage = stageRef.current;
+    const gesture = touchGesture.current;
+    if (!stage || !gesture) return;
+    const touches = e.evt.touches;
+
+    if (gesture.mode === "pinch" && touches.length >= 2) {
+      const points = touchPointsFor(stage, touches);
+      const center = centerOf(points);
+      const distance = distanceBetween(points[0], points[1]);
+      if (!Number.isFinite(distance) || distance <= 0) return;
+      const scaled = zoomCanvasViewportAt(
+        gesture.startViewport,
+        gesture.startCenter,
+        gesture.startViewport.scale * (distance / gesture.startDistance),
+      );
+      setViewport(
+        panCanvasViewport(scaled, {
+          x: center.x - gesture.startCenter.x,
+          y: center.y - gesture.startCenter.y,
+        }),
+      );
+      stopTouchDefaults(e);
+      return;
+    }
+
+    if (gesture.mode === "pan" && touches.length === 1) {
+      const [point] = touchPointsFor(stage, touches);
+      setViewport(
+        panCanvasViewport(gesture.startViewport, {
+          x: point.x - gesture.startCenter.x,
+          y: point.y - gesture.startCenter.y,
+        }),
+      );
+      stopTouchDefaults(e);
+    }
+  };
+
+  const onTouchEnd = (e: Konva.KonvaEventObject<TouchEvent>) => {
+    if (touchGesture.current) stopTouchDefaults(e);
+    touchGesture.current = null;
+    setPanning(false);
+  };
+
   // Cursor style
   const cursorStyle = (() => {
     if (panning) return "grabbing";
@@ -212,7 +332,7 @@ export function Editor({ sheet, onCalibrateConfirm }: Props) {
   return (
     <div
       ref={containerRef}
-      className="absolute inset-0"
+      className="absolute inset-0 canvas-touch-surface"
       style={{ cursor: cursorStyle }}
     >
       {size.w > 0 && size.h > 0 && (
@@ -224,6 +344,10 @@ export function Editor({ sheet, onCalibrateConfirm }: Props) {
           onMouseMove={onMouseMove}
           onMouseDown={onMouseDown}
           onMouseUp={onMouseUp}
+          onTouchStart={onTouchStart}
+          onTouchMove={onTouchMove}
+          onTouchEnd={onTouchEnd}
+          onTouchCancel={onTouchEnd}
           onDblClick={rectHandlers.onDblClick}
           onMouseLeave={() => {
             setCursor(null);

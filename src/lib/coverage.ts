@@ -48,6 +48,12 @@ export interface EffectiveCoverage {
 const DEFAULT_OPACITY = 0.18;
 const DEFAULT_APEX_OFFSET_FT = 1.5; // ~ "off the camera body"
 
+const clamp = (value: number, min: number, max: number) =>
+  Math.max(min, Math.min(max, value));
+
+const finiteNumber = (value: unknown, fallback: number) =>
+  typeof value === "number" && Number.isFinite(value) ? value : fallback;
+
 export function resolveCoverage(m: DeviceMarkup): EffectiveCoverage | null {
   const dev = devicesById[m.deviceId];
   if (!dev) return null;
@@ -59,32 +65,50 @@ export function resolveCoverage(m: DeviceMarkup): EffectiveCoverage | null {
 
   const isCamera = dev.category === "cameras";
   const sensorFormat = override.sensorFormat ?? DEFAULT_SENSOR;
+  const focalLengthMm =
+    typeof override.focalLengthMm === "number" &&
+    Number.isFinite(override.focalLengthMm) &&
+    override.focalLengthMm > 0
+      ? override.focalLengthMm
+      : undefined;
 
   // Angle priority:
   //   1. Explicit override.angle (user dragged the angle slider)
   //   2. Calculated from focal length + sensor (camera-style spec)
   //   3. Preset angle (default)
-  let angle = preset.angle ?? 90;
-  if (override.focalLengthMm && override.focalLengthMm > 0 && override.angle === undefined) {
-    angle = calcHFovDeg(override.focalLengthMm, sensorFormat);
+  let angle = finiteNumber(preset.angle, 90);
+  if (focalLengthMm && override.angle === undefined) {
+    angle = calcHFovDeg(focalLengthMm, sensorFormat);
   }
-  if (override.angle !== undefined) angle = override.angle;
+  if (override.angle !== undefined) angle = finiteNumber(override.angle, angle);
+  angle = clamp(angle, 0.5, 360);
+
+  const presetRange = Math.max(1, finiteNumber(preset.range, 1));
+  const rangeFt = Math.max(1, finiteNumber(override.range, presetRange));
+  const opacity = clamp(
+    finiteNumber(override.opacity, finiteNumber(preset.opacity, DEFAULT_OPACITY)),
+    0,
+    1,
+  );
+  const apexOffsetFt = Math.max(
+    0,
+    finiteNumber(override.apexOffsetFt, isCamera ? DEFAULT_APEX_OFFSET_FT : 0),
+  );
 
   return {
     shape: preset.shape,
-    rangeFt: override.range ?? preset.range,
+    rangeFt,
     angle,
     rings: preset.rings ?? 1,
     color: override.color ?? baseColor,
-    opacity: override.opacity ?? preset.opacity ?? DEFAULT_OPACITY,
+    opacity,
     enabled: override.enabled ?? preset.defaultEnabled ?? false,
     label: preset.label ?? "Coverage",
     preset,
     isCamera,
-    focalLengthMm: override.focalLengthMm,
+    focalLengthMm,
     sensorFormat,
-    apexOffsetFt:
-      override.apexOffsetFt ?? (isCamera ? DEFAULT_APEX_OFFSET_FT : 0),
+    apexOffsetFt,
     showRangeMarkers: override.showRangeMarkers ?? isCamera,
     showCenterline: override.showCenterline ?? isCamera,
     showQualityZones: override.showQualityZones ?? false,
@@ -101,8 +125,16 @@ export function rangeFtToPts(
   ft: number,
   calibration: Calibration | undefined,
 ): number | null {
-  if (!calibration || !calibration.pixelsPerFoot) return null;
-  return ft * calibration.pixelsPerFoot;
+  if (!Number.isFinite(ft) || ft <= 0) return null;
+  if (
+    !calibration ||
+    !Number.isFinite(calibration.pixelsPerFoot) ||
+    calibration.pixelsPerFoot <= 0
+  ) {
+    return null;
+  }
+  const pts = ft * calibration.pixelsPerFoot;
+  return Number.isFinite(pts) && pts > 0 ? pts : null;
 }
 
 /**

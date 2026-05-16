@@ -274,9 +274,11 @@ export function StartScreen() {
               Open a <span className="font-mono text-ink-200">.knoxnet</span> file shared by
               a collaborator — all sheets and live markups are restored.
             </div>
+            <div className="mt-2 text-[11px] text-ink-400 font-mono leading-snug">
+              iPhone tip: this picker allows any file, then KnoxNet validates the project.
+            </div>
             <input
               type="file"
-              accept=".knoxnet,application/json"
               className="hidden"
               onChange={(e) => onOpenProjectFile(e.target.files)}
             />
