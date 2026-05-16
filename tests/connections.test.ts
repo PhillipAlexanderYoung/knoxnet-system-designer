@@ -1,15 +1,18 @@
 // @vitest-environment node
 import { describe, it, expect } from "vitest";
 import {
+  buildSwitchPortAssignmentPatches,
   connectionDiagramTags,
   connectionFromLabel,
   connectionToLabel,
   effectivePortsForTag,
   findDeviceByTag,
   internalEndpointPortLabel,
+  isDevicePortInUse,
   isInternalPortInUse,
   findPort,
   nextAvailableInternalPort,
+  withAutoAssignedConnectionPorts,
 } from "../src/lib/connections";
 import { devicesById, effectiveDevicePorts } from "../src/data/devices";
 import type { DeviceMarkup, Project } from "../src/store/projectStore";
@@ -213,5 +216,142 @@ describe("connection helpers", () => {
     expect(port?.id).toBe("port-2");
     expect(isInternalPortInUse(p, sw, "port-1")).toBe(true);
     expect(isInternalPortInUse(p, sw, "port-1", "existing")).toBe(false);
+  });
+
+  it("auto-assigns distinct compatible ports for mixed devices on one switch", () => {
+    const p = makeProject([
+      { tag: "SW-01", deviceId: "net-switch-poe", category: "network" },
+      { tag: "CAM-01", deviceId: "cam-dome", category: "cameras" },
+      { tag: "AP-01", deviceId: "net-ap-i", category: "network" },
+      { tag: "BR-01", deviceId: "net-wifi-bridge", category: "network" },
+    ]);
+
+    for (const tag of ["CAM-01", "AP-01", "BR-01"]) {
+      const conn = withAutoAssignedConnectionPorts(p, {
+        id: `conn-${tag}`,
+        fromTag: tag,
+        toTag: "SW-01",
+        medium: "cat6",
+      });
+      p.connections = [...(p.connections ?? []), conn];
+    }
+
+    expect(p.connections?.map((conn) => conn.fromPortId)).toEqual(["eth0", "eth0", "eth0"]);
+    expect(p.connections?.map((conn) => conn.toPortId)).toEqual([
+      "port-1",
+      "port-2",
+      "port-3",
+    ]);
+    expect(p.connections?.map((conn) => conn.toPort)).toEqual([
+      "Port 1",
+      "Port 2",
+      "Port 3",
+    ]);
+  });
+
+  it("preserves manual ports and skips them for later auto assignments", () => {
+    const p = makeProject([
+      { tag: "SW-01", deviceId: "net-switch-poe", category: "network" },
+      { tag: "CAM-01", deviceId: "cam-dome", category: "cameras" },
+      { tag: "CAM-02", deviceId: "cam-dome", category: "cameras" },
+    ]);
+    const manual = withAutoAssignedConnectionPorts(p, {
+      id: "manual",
+      fromTag: "CAM-01",
+      fromPortId: "eth0",
+      toTag: "SW-01",
+      toPortId: "port-1",
+      medium: "cat6",
+    });
+    p.connections = [manual];
+
+    const auto = withAutoAssignedConnectionPorts(p, {
+      id: "auto",
+      fromTag: "CAM-02",
+      toTag: "SW-01",
+      medium: "cat6",
+    });
+
+    expect(manual).toMatchObject({
+      fromPortId: "eth0",
+      fromPort: "ETH 0 (PoE in)",
+      toPortId: "port-1",
+      toPort: "Port 1",
+    });
+    expect(auto).toMatchObject({
+      fromPortId: "eth0",
+      toPortId: "port-2",
+    });
+    const sw = findDeviceByTag(p, "SW-01")!;
+    expect(isDevicePortInUse(p, sw, "port-1")).toBe(true);
+  });
+
+  it("repairs duplicate switch port assignments with the next free port", () => {
+    const p = makeProject([
+      { tag: "SW-01", deviceId: "net-switch-poe", category: "network" },
+      { tag: "CAM-01", deviceId: "cam-dome", category: "cameras" },
+      { tag: "CAM-02", deviceId: "cam-dome", category: "cameras" },
+    ]);
+    p.connections = [
+      {
+        id: "existing",
+        fromTag: "CAM-01",
+        toTag: "SW-01",
+        toPortId: "port-1",
+        toPort: "Port 1",
+        medium: "cat6",
+      },
+      {
+        id: "duplicate",
+        fromTag: "CAM-02",
+        toTag: "SW-01",
+        toPortId: "port-1",
+        toPort: "Port 1",
+        medium: "cat6",
+      },
+    ];
+
+    const result = buildSwitchPortAssignmentPatches(p, findDeviceByTag(p, "SW-01")!);
+
+    expect(result.exhausted).toEqual([]);
+    expect(result.patches.duplicate).toMatchObject({
+      toPortId: "port-2",
+      toPort: "Port 2",
+    });
+    expect(result.patches.existing).toBeUndefined();
+  });
+
+  it("supports 48-port switch assignment before SFP ports", () => {
+    const p = makeProject([
+      { tag: "SW-48", deviceId: "net-switch-poe", category: "network" },
+      { tag: "CAM-48", deviceId: "cam-dome", category: "cameras" },
+    ]);
+    const sw = findDeviceByTag(p, "SW-48")!;
+    sw.instancePorts = [
+      ...Array.from({ length: 48 }, (_, i) => ({
+        id: `port-${i + 1}`,
+        label: `Port ${i + 1}`,
+        kind: "ethernet" as const,
+      })),
+      { id: "sfp-1", label: "SFP 1", kind: "fiber" as const },
+    ];
+    p.connections = [
+      ...Array.from({ length: 47 }, (_, i) => ({
+        id: `used-${i + 1}`,
+        fromTag: `CAM-${i + 1}`,
+        toTag: "SW-48",
+        toPortId: `port-${i + 1}`,
+        toPort: `Port ${i + 1}`,
+        medium: "cat6",
+      })),
+      { id: "next", fromTag: "CAM-48", toTag: "SW-48", medium: "cat6" },
+    ];
+
+    const result = buildSwitchPortAssignmentPatches(p, sw);
+
+    expect(result.patches.next).toMatchObject({
+      toPortId: "port-48",
+      toPort: "Port 48",
+    });
   });
 });

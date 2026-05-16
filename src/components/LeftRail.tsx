@@ -665,6 +665,7 @@ function ExportVisibilityPanel() {
     { kind: "polygon", label: "Polygons" },
     { kind: "arrow", label: "Arrows" },
     { kind: "freehand", label: "Freehand" },
+    { kind: "schedule", label: "Schedules" },
   ];
 
   // Tally how many of each kind across all sheets.

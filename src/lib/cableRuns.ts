@@ -608,6 +608,7 @@ export function buildCableRunConnection(
   const start = route[0];
   const end = route[route.length - 1];
   if (!start || !end) return null;
+  if (start.routeWaypoint || end.routeWaypoint) return null;
   if (!start.deviceTag || !end.deviceTag || start.deviceTag === end.deviceTag) {
     return null;
   }

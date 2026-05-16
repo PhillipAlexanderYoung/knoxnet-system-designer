@@ -87,15 +87,27 @@ export function isInternalPortInUse(
   portId: string,
   excludeConnectionId?: string,
 ): boolean {
+  return isDevicePortInUse(project, device, portId, excludeConnectionId);
+}
+
+export function isDevicePortInUse(
+  project: Project,
+  device: DeviceMarkup,
+  portId: string,
+  excludeConnectionId?: string,
+): boolean {
   return (project.connections ?? []).some(
     (conn) =>
       conn.id !== excludeConnectionId &&
-      conn.internalEndpoint?.deviceId === device.id &&
-      conn.internalEndpoint?.portId === portId,
+      ((conn.fromTag === device.tag && conn.fromPortId === portId) ||
+        (conn.toTag === device.tag && conn.toPortId === portId) ||
+        ((conn.internalEndpoint?.deviceId === device.id ||
+          conn.internalEndpoint?.deviceTag === device.tag) &&
+          conn.internalEndpoint?.portId === portId)),
   );
 }
 
-export function nextAvailableInternalPort(
+export function nextAvailableDevicePort(
   project: Project,
   conn: DeviceConnection,
   device: DeviceMarkup,
@@ -105,8 +117,219 @@ export function nextAvailableInternalPort(
   return ports.find(
     (port) =>
       isPortCompatibleWithConnection(port, conn) &&
-      !isInternalPortInUse(project, device, port.id, conn.id),
+      !isDevicePortInUse(project, device, port.id, conn.id),
   );
+}
+
+export function nextAvailableInternalPort(
+  project: Project,
+  conn: DeviceConnection,
+  device: DeviceMarkup,
+): PortSpec | undefined {
+  return nextAvailableDevicePort(project, conn, device);
+}
+
+export interface AutoAssignConnectionPortsOptions {
+  from?: boolean;
+  to?: boolean;
+  internalEndpoint?: boolean;
+}
+
+export interface SwitchPortAssignmentResult {
+  patches: Record<string, Partial<DeviceConnection>>;
+  exhausted: Array<{ connectionId: string; deviceTag: string }>;
+}
+
+export function withAutoAssignedConnectionPorts(
+  project: Project,
+  conn: DeviceConnection,
+  options: AutoAssignConnectionPortsOptions = {},
+): DeviceConnection {
+  let next = conn;
+  const assignFrom = options.from ?? true;
+  const assignTo = options.to ?? true;
+  const assignInternal = options.internalEndpoint ?? true;
+
+  if (assignFrom) {
+    next = withAutoAssignedEndpointPort(project, next, "from");
+  } else if (next.fromPortId) {
+    next = withResolvedEndpointPortLabel(project, next, "from");
+  }
+
+  if (assignTo) {
+    next = withAutoAssignedEndpointPort(project, next, "to");
+  } else if (next.toPortId) {
+    next = withResolvedEndpointPortLabel(project, next, "to");
+  }
+
+  if (next.internalEndpoint) {
+    next = withResolvedInternalEndpoint(project, next, assignInternal);
+  }
+
+  return next;
+}
+
+export function buildSwitchPortAssignmentPatches(
+  project: Project,
+  switchDevice: DeviceMarkup,
+  options: { overwrite?: boolean } = {},
+): SwitchPortAssignmentResult {
+  const ports = effectiveDevicePorts(switchDevice.deviceId, switchDevice.instancePorts) ?? [];
+  const switchConnections = switchPortTargets(project, switchDevice);
+  const overwrite = options.overwrite ?? false;
+  const used = new Set<string>();
+  const needsAssignment: SwitchPortTarget[] = [];
+  const patches: Record<string, Partial<DeviceConnection>> = {};
+  const exhausted: Array<{ connectionId: string; deviceTag: string }> = [];
+
+  for (const target of switchConnections) {
+    if (!overwrite && target.portId && !used.has(target.portId)) {
+      used.add(target.portId);
+      continue;
+    }
+    needsAssignment.push(target);
+  }
+
+  for (const target of needsAssignment) {
+    const port = ports.find(
+      (candidate) =>
+        isPortCompatibleWithConnection(candidate, target.connection) &&
+        !used.has(candidate.id),
+    );
+    if (!port) {
+      exhausted.push({ connectionId: target.connection.id, deviceTag: target.deviceTag });
+      continue;
+    }
+    used.add(port.id);
+    patches[target.connection.id] = patchSwitchPortTarget(target, port);
+  }
+
+  return { patches, exhausted };
+}
+
+type SwitchPortTarget =
+  | {
+      connection: DeviceConnection;
+      kind: "from" | "to";
+      portId?: string;
+      deviceTag: string;
+    }
+  | {
+      connection: DeviceConnection;
+      kind: "internal";
+      portId?: string;
+      deviceTag: string;
+    };
+
+function switchPortTargets(project: Project, switchDevice: DeviceMarkup): SwitchPortTarget[] {
+  const targets: SwitchPortTarget[] = [];
+  for (const connection of project.connections ?? []) {
+    if (connection.fromTag === switchDevice.tag) {
+      targets.push({
+        connection,
+        kind: "from",
+        portId: connection.fromPortId,
+        deviceTag: connection.toTag,
+      });
+      continue;
+    }
+    if (connection.toTag === switchDevice.tag) {
+      targets.push({
+        connection,
+        kind: "to",
+        portId: connection.toPortId,
+        deviceTag: connection.fromTag,
+      });
+      continue;
+    }
+    const endpoint = connection.internalEndpoint;
+    if (endpoint?.deviceId === switchDevice.id || endpoint?.deviceTag === switchDevice.tag) {
+      const otherTag = connection.fromTag === endpoint.containerTag ? connection.toTag : connection.fromTag;
+      targets.push({
+        connection,
+        kind: "internal",
+        portId: endpoint.portId,
+        deviceTag: otherTag,
+      });
+    }
+  }
+  return targets;
+}
+
+function patchSwitchPortTarget(
+  target: SwitchPortTarget,
+  port: PortSpec,
+): Partial<DeviceConnection> {
+  if (target.kind === "from") {
+    return { fromPortId: port.id, fromPort: port.label };
+  }
+  if (target.kind === "to") {
+    return { toPortId: port.id, toPort: port.label };
+  }
+  return {
+    internalEndpoint: {
+      ...target.connection.internalEndpoint!,
+      portId: port.id,
+      port: port.label,
+    },
+  };
+}
+
+function withAutoAssignedEndpointPort(
+  project: Project,
+  conn: DeviceConnection,
+  side: "from" | "to",
+): DeviceConnection {
+  const tag = side === "from" ? conn.fromTag : conn.toTag;
+  const idKey = side === "from" ? "fromPortId" : "toPortId";
+  const labelKey = side === "from" ? "fromPort" : "toPort";
+  if (conn[idKey]) return withResolvedEndpointPortLabel(project, conn, side);
+  if (conn[labelKey]?.trim()) return conn;
+  const device = findDeviceByTag(project, tag);
+  if (!device) return conn;
+  const port = nextAvailableDevicePort(project, conn, device);
+  return port ? { ...conn, [idKey]: port.id, [labelKey]: port.label } : conn;
+}
+
+function withResolvedEndpointPortLabel(
+  project: Project,
+  conn: DeviceConnection,
+  side: "from" | "to",
+): DeviceConnection {
+  const tag = side === "from" ? conn.fromTag : conn.toTag;
+  const idKey = side === "from" ? "fromPortId" : "toPortId";
+  const labelKey = side === "from" ? "fromPort" : "toPort";
+  const port = findPort(effectivePortsForTag(project, tag), conn[idKey]);
+  return port ? { ...conn, [labelKey]: port.label } : conn;
+}
+
+function withResolvedInternalEndpoint(
+  project: Project,
+  conn: DeviceConnection,
+  assignMissingPort: boolean,
+): DeviceConnection {
+  const endpoint = conn.internalEndpoint;
+  if (!endpoint) return conn;
+  const device =
+    findDeviceById(project, endpoint.deviceId) ??
+    findDeviceByTag(project, endpoint.deviceTag);
+  if (!device) return conn;
+  const ports = effectiveDevicePorts(device.deviceId, device.instancePorts);
+  const explicitPort = endpoint.portId ? findPort(ports, endpoint.portId) : undefined;
+  const port =
+    explicitPort ??
+    (assignMissingPort && !endpoint.port?.trim()
+      ? nextAvailableDevicePort(project, conn, device)
+      : undefined);
+  return {
+    ...conn,
+    internalEndpoint: {
+      ...endpoint,
+      deviceId: device.id,
+      deviceTag: device.tag,
+      ...(port ? { portId: port.id, port: port.label } : {}),
+    },
+  };
 }
 
 /** Human label for the source endpoint of a connection — prefers the

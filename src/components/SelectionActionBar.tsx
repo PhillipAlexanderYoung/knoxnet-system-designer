@@ -170,6 +170,8 @@ function labelFor(m: Markup): string {
       return "Polygon";
     case "freehand":
       return "Freehand";
+    case "schedule":
+      return "Schedule";
   }
 }
 
@@ -206,6 +208,7 @@ function computeBBox(items: Markup[]): BBox | null {
         }
         break;
       case "text":
+      case "schedule":
         expand(m.x, m.y);
         break;
       case "callout":

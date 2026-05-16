@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   useProjectStore,
   selectActiveSheet,
@@ -15,11 +15,15 @@ import {
   type DeviceSystemConfig,
   type DeviceConnection,
   type PortSpec,
+  type ScheduleMarkup,
+  type ScheduleBlockMode,
 } from "../store/projectStore";
 import { devicesById, effectiveDevicePorts } from "../data/devices";
 import {
+  buildSwitchPortAssignmentPatches,
   effectivePortsForTag,
   findPort,
+  isDevicePortInUse,
   isInternalPortInUse,
   nextAvailableInternalPort,
 } from "../lib/connections";
@@ -55,6 +59,23 @@ import {
   type ValidationIssue,
 } from "../lib/validation";
 import {
+  buildAutoIpAssignmentPatches,
+  connectedDevicesForSwitch,
+  isSwitchLikeDevice,
+  mergeDeviceConfig,
+  DEFAULT_NETWORK_START_IP,
+  DEFAULT_VLAN,
+  type ConnectedSwitchDevice,
+} from "../lib/networkConfig";
+import {
+  buildScheduleBlockMarkup,
+  existingScheduleBlockForTarget,
+  inferScheduleTargetKind,
+  scheduleBlockContent,
+  scheduleBlockSize,
+  scheduleRowsForDisplay,
+} from "../lib/scheduleBlocks";
+import {
   LENS_PRESETS,
   SENSOR_FORMATS,
   calcHFovDeg,
@@ -78,6 +99,7 @@ import {
   Plus,
   X,
   AlertTriangle,
+  ClipboardList,
 } from "lucide-react";
 
 export function PropertiesPanel() {
@@ -507,6 +529,7 @@ function SingleMarkupEditor({
 
       {markup.kind === "device" && <DeviceProps markup={markup} onChange={onChange} />}
       {markup.kind === "cable" && <CableProps markup={markup} onChange={onChange} />}
+      {markup.kind === "schedule" && <ScheduleProps markup={markup} onChange={onChange} />}
       {(markup.kind === "text" || markup.kind === "callout") && (
         <Field label="Text">
           <textarea
@@ -535,6 +558,183 @@ function SingleMarkupEditor({
           placeholder="Internal notes (not exported)"
         />
       </Field>
+    </>
+  );
+}
+
+function ScheduleTargetControls({ target }: { target: DeviceMarkup | CableMarkup }) {
+  const sheet = useProjectStore(selectActiveSheet);
+  const project = useProjectStore((s) => s.project);
+  const addMarkup = useProjectStore((s) => s.addMarkup);
+  const updateMarkup = useProjectStore((s) => s.updateMarkup);
+  const setSelected = useProjectStore((s) => s.setSelected);
+  const schedule = sheet ? existingScheduleBlockForTarget(sheet.markups, target.id) : undefined;
+  const targetKind = inferScheduleTargetKind(target);
+  if (!targetKind) return null;
+
+  const enabled = !!schedule && schedule.hidden !== true && schedule.visible !== false;
+  const preview =
+    project && sheet && schedule ? scheduleBlockContent(project, sheet, schedule) : null;
+
+  const toggle = () => {
+    if (!schedule) {
+      const next = buildScheduleBlockMarkup(target);
+      if (!next) return;
+      addMarkup(next);
+      setSelected([next.id]);
+      return;
+    }
+    updateMarkup(schedule.id, {
+      hidden: enabled,
+      visible: enabled ? false : true,
+    } as Partial<ScheduleMarkup>);
+  };
+
+  return (
+    <div className="rounded-md border border-white/5 bg-ink-900/35 px-2 py-2 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <ClipboardList className="w-3.5 h-3.5 text-amber-knox shrink-0" />
+          <div className="min-w-0">
+            <div className="text-[10px] font-mono uppercase tracking-wider text-amber-knox">
+              Floating Schedule
+            </div>
+            <div className="text-[10px] text-ink-500 truncate">
+              Auto-pulls customer-facing details from this item.
+            </div>
+          </div>
+        </div>
+        <button
+          onClick={toggle}
+          className={`text-[10px] font-mono px-2 py-0.5 rounded border transition-colors ${
+            enabled
+              ? "bg-amber-knox/15 text-amber-knox border-amber-knox/40"
+              : "text-ink-300 border-white/10 hover:border-white/20"
+          }`}
+        >
+          {enabled ? "Shown" : "Show"}
+        </button>
+      </div>
+      {schedule && (
+        <div className="grid grid-cols-2 gap-1.5">
+          <button
+            onClick={() => setSelected([schedule.id])}
+            className="btn-ghost justify-center text-[11px]"
+          >
+            Edit Block
+          </button>
+          <select
+            className="input text-xs"
+            value={schedule.mode ?? "compact"}
+            onChange={(e) =>
+              updateMarkup(schedule.id, {
+                mode: e.target.value as ScheduleBlockMode,
+              } as Partial<ScheduleMarkup>)
+            }
+          >
+            <option value="compact">Compact</option>
+            <option value="detailed">Detailed</option>
+          </select>
+        </div>
+      )}
+      {preview && (
+        <div className="text-[10px] text-ink-500 leading-snug">
+          Preview: {preview.title}
+          {preview.rows.length > 0 ? ` - ${preview.rows.length} line${preview.rows.length === 1 ? "" : "s"}` : " - no data yet"}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ScheduleProps({
+  markup,
+  onChange,
+}: {
+  markup: ScheduleMarkup;
+  onChange: (p: Partial<ScheduleMarkup>) => void;
+}) {
+  const project = useProjectStore((s) => s.project);
+  const sheet = useProjectStore(selectActiveSheet);
+  const deleteMarkup = useProjectStore((s) => s.deleteMarkup);
+  const setSelected = useProjectStore((s) => s.setSelected);
+  const content = project && sheet ? scheduleBlockContent(project, sheet, markup) : null;
+  const size = content ? scheduleBlockSize(content, markup.mode) : null;
+  const rows = content && size ? scheduleRowsForDisplay(content, size.maxRows) : [];
+
+  return (
+    <>
+      <div className="rounded-md border border-white/5 bg-ink-900/35 px-2 py-2 space-y-2">
+        <div className="flex items-center gap-1.5">
+          <ClipboardList className="w-3.5 h-3.5 text-amber-knox" />
+          <span className="text-xs font-medium text-ink-100">Schedule Block</span>
+        </div>
+        <Field label="Title" hint="optional">
+          <input
+            className="input"
+            value={markup.title ?? ""}
+            placeholder={content?.title ?? "Schedule"}
+            onChange={(e) => onChange({ title: e.target.value || undefined })}
+          />
+        </Field>
+        <Field label="Mode">
+          <select
+            className="input"
+            value={markup.mode ?? "compact"}
+            onChange={(e) => onChange({ mode: e.target.value as ScheduleBlockMode })}
+          >
+            <option value="compact">Compact</option>
+            <option value="detailed">Detailed</option>
+          </select>
+        </Field>
+        <div className="grid grid-cols-2 gap-1.5">
+          <button
+            onClick={() =>
+              onChange({
+                visible: markup.visible === false ? true : false,
+                hidden: markup.visible === false ? false : true,
+              } as Partial<ScheduleMarkup>)
+            }
+            className="btn-ghost justify-center text-[11px]"
+          >
+            {markup.visible === false || markup.hidden ? "Show" : "Hide"}
+          </button>
+          <button
+            onClick={() => {
+              deleteMarkup(markup.id);
+              setSelected([]);
+            }}
+            className="btn-ghost justify-center text-[11px] text-signal-red hover:bg-signal-red/10"
+          >
+            Remove
+          </button>
+        </div>
+        <div className="text-[10px] text-ink-500 leading-snug">
+          Target: <span className="font-mono text-ink-300">{markup.targetId}</span>
+        </div>
+      </div>
+
+      <PositionFields markup={markup} onChange={onChange} />
+
+      {content && (
+        <div className="rounded-md border border-white/5 bg-ink-900/35 px-2 py-2 space-y-1">
+          <div className="text-[10px] font-mono uppercase tracking-wider text-amber-knox">
+            Live Preview
+          </div>
+          <div className="text-[11px] font-mono text-ink-200 truncate">
+            {content.title}
+          </div>
+          {rows.length > 0 ? (
+            rows.map((row, i) => (
+              <div key={`${markup.id}-preview-${i}`} className="text-[10px] font-mono text-ink-400 truncate">
+                {row}
+              </div>
+            ))
+          ) : (
+            <div className="text-[10px] text-ink-500">No schedule data yet.</div>
+          )}
+        </div>
+      )}
     </>
   );
 }
@@ -602,6 +802,8 @@ function DeviceProps({
           placeholder="e.g. Bandshell East"
         />
       </Field>
+
+      <ScheduleTargetControls target={markup} />
 
       {isRouteInfra && markup.attachedRunEndpoint && (
         <div className="rounded-md border border-white/5 bg-ink-900/35 px-2 py-2 space-y-1.5">
@@ -1400,6 +1602,7 @@ function CableProps({
           ${cab.costPerFoot.toFixed(2)}/ft · {cab.laborPerFoot.toFixed(3)} hr/ft
         </div>
       )}
+      <ScheduleTargetControls target={markup} />
     </>
   );
 }
@@ -1661,6 +1864,9 @@ function Sel({ children, ...props }: React.SelectHTMLAttributes<HTMLSelectElemen
   return <select {...props} className="input text-xs">{children}</select>;
 }
 
+const clampNumber = (value: number, min: number, max: number) =>
+  Math.max(min, Math.min(max, value));
+
 function NetworkSection({
   net,
   managementUrl,
@@ -1884,6 +2090,421 @@ function SwitchSection({
   );
 }
 
+function ConnectedDevicesSection({
+  devices,
+  switchPorts,
+  startIp,
+  vlan,
+  onStartIpChange,
+  onVlanChange,
+  onAutoAssignAllIps,
+  onAutoAssignBlankIps,
+  onApplyVlan,
+  onAutoAssignPorts,
+  onPatchDevice,
+  onHintConnection,
+  onSelectDevice,
+  onRemoveConnection,
+  onDisconnectFromSwitch,
+  portExhaustionMessage,
+}: {
+  devices: ConnectedSwitchDevice[];
+  switchPorts: PortSpec[] | undefined;
+  startIp: string;
+  vlan: string;
+  onStartIpChange: (value: string) => void;
+  onVlanChange: (value: string) => void;
+  onAutoAssignAllIps: () => void;
+  onAutoAssignBlankIps: () => void;
+  onApplyVlan: () => void;
+  onAutoAssignPorts: () => void;
+  onPatchDevice: (device: DeviceMarkup, patch: Partial<DeviceSystemConfig>) => void;
+  onHintConnection: (row: ConnectedSwitchDevice | undefined) => void;
+  onSelectDevice: (deviceId: string) => void;
+  onRemoveConnection: (connectionId: string) => void;
+  onDisconnectFromSwitch: (connectionId: string) => void;
+  portExhaustionMessage?: string;
+}) {
+  const [hoveredConnectionId, setHoveredConnectionId] = useState<string | null>(null);
+  const [activePortId, setActivePortId] = useState<string | null>(null);
+  const setHoveredRow = (row: ConnectedSwitchDevice | undefined) => {
+    setHoveredConnectionId(row?.connection.id ?? null);
+    onHintConnection(row);
+  };
+  return (
+    <CollapsibleGroup
+      icon={Plug}
+      title="Connected Devices"
+      badge={devices.length > 0 ? String(devices.length) : undefined}
+      defaultOpen={true}
+    >
+      <div className="rounded-md border border-white/5 bg-ink-900/25 p-2 space-y-1.5">
+        <div className="grid grid-cols-2 gap-1.5">
+          <F label="Start IP">
+            <Inp
+              placeholder={DEFAULT_NETWORK_START_IP}
+              value={startIp}
+              onChange={(e) => onStartIpChange(e.target.value)}
+            />
+          </F>
+          <F label="VLAN">
+            <Inp
+              placeholder="1"
+              inputMode="numeric"
+              value={vlan}
+              onChange={(e) => onVlanChange(e.target.value)}
+            />
+          </F>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={onAutoAssignPorts}
+            disabled={devices.length === 0}
+            className="btn flex-1 justify-center text-[11px] disabled:opacity-40"
+          >
+            Auto assign ports
+          </button>
+          <button
+            onClick={onAutoAssignAllIps}
+            disabled={devices.length === 0}
+            className="btn flex-1 justify-center text-[11px] disabled:opacity-40"
+          >
+            Reassign all IPs
+          </button>
+        </div>
+        <div className="flex items-center justify-between gap-2 text-[10px] text-ink-500 leading-snug">
+          <span className="min-w-0">
+            Reassign all uses Start IP and VLAN to refresh every connected device.
+          </span>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={onApplyVlan}
+              disabled={devices.length === 0}
+              className="text-[10px] font-mono text-signal-blue hover:text-signal-blue/80 disabled:opacity-40"
+            >
+              Apply VLAN
+            </button>
+            <button
+              onClick={onAutoAssignBlankIps}
+              disabled={devices.length === 0}
+              className="text-[10px] font-mono text-signal-blue hover:text-signal-blue/80 disabled:opacity-40"
+            >
+              Fill blanks only
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <SwitchPortStrip
+        ports={switchPorts}
+        devices={devices}
+        hoveredConnectionId={hoveredConnectionId}
+        activePortId={activePortId}
+        onHoverDevice={setHoveredRow}
+        onTogglePortMenu={(portId) => setActivePortId(activePortId === portId ? null : portId)}
+        onSelectDevice={(deviceId) => {
+          setActivePortId(null);
+          onSelectDevice(deviceId);
+        }}
+        onReassignPorts={() => {
+          setActivePortId(null);
+          onAutoAssignPorts();
+        }}
+        onReassignIps={() => {
+          setActivePortId(null);
+          onAutoAssignAllIps();
+        }}
+        onRemoveConnection={(connectionId) => {
+          setActivePortId(null);
+          onRemoveConnection(connectionId);
+        }}
+        onDisconnectFromSwitch={(connectionId) => {
+          setActivePortId(null);
+          onDisconnectFromSwitch(connectionId);
+        }}
+      />
+      {portExhaustionMessage && (
+        <div className="rounded-md border border-amber-knox/30 bg-amber-knox/10 px-2 py-1 text-[10px] text-amber-knox leading-snug">
+          {portExhaustionMessage}
+        </div>
+      )}
+
+      {devices.length === 0 ? (
+        <div className="text-[11px] text-ink-500 leading-snug">
+          No devices are connected to this switch yet. Add connections or cable runs and they will appear here.
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          {devices.map(({ connection, device, devicePort, switchPort, viaInternalEndpoint }) => {
+            const network = device.systemConfig?.network ?? {};
+            return (
+              <div
+                key={`${connection.id}:${device.id}`}
+                onMouseEnter={() => setHoveredRow({ connection, device, devicePort, switchPort, viaInternalEndpoint })}
+                onMouseLeave={() => setHoveredRow(undefined)}
+                className={`rounded-md border bg-ink-900/20 p-2 space-y-1.5 transition-colors ${
+                  hoveredConnectionId === connection.id
+                    ? "border-signal-blue/50"
+                    : "border-white/5"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-mono text-ink-100 truncate">
+                      {network.hostname || device.tag}
+                    </div>
+                    <div className="text-[10px] text-ink-500 truncate">
+                      {device.tag} · {devicesById[device.deviceId]?.label ?? device.deviceId}
+                      {viaInternalEndpoint ? " · internal" : ""}
+                    </div>
+                  </div>
+                  {network.ipAddress && (
+                    <span className="text-[10px] font-mono text-signal-blue shrink-0">
+                      {network.ipAddress}
+                    </span>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <F label="Switch Port">
+                    <div className="input font-mono text-xs text-ink-100 bg-ink-950/40">
+                      {switchPort || "Auto"}
+                    </div>
+                  </F>
+                  <F label="Device Port">
+                    <div className="input font-mono text-xs text-ink-100 bg-ink-950/40">
+                      {devicePort || "Device uplink"}
+                    </div>
+                  </F>
+                  <F label="IP">
+                    <Inp
+                      placeholder="192.168.1.x"
+                      value={network.ipAddress ?? ""}
+                      onChange={(e) =>
+                        onPatchDevice(device, {
+                          network: { ...network, ipAddress: e.target.value || undefined },
+                        })
+                      }
+                    />
+                  </F>
+                  <F label="VLAN">
+                    <Inp
+                      placeholder="1"
+                      inputMode="numeric"
+                      value={network.vlan ?? ""}
+                      onChange={(e) => {
+                        const value = parseInt(e.target.value);
+                        onPatchDevice(device, {
+                          network: { ...network, vlan: isFinite(value) ? value : undefined },
+                        });
+                      }}
+                    />
+                  </F>
+                  <F label="Hostname">
+                    <Inp
+                      placeholder={device.tag.toLowerCase()}
+                      value={network.hostname ?? ""}
+                      onChange={(e) =>
+                        onPatchDevice(device, {
+                          network: { ...network, hostname: e.target.value || undefined },
+                        })
+                      }
+                    />
+                  </F>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </CollapsibleGroup>
+  );
+}
+
+function SwitchPortStrip({
+  ports,
+  devices,
+  hoveredConnectionId,
+  activePortId,
+  onHoverDevice,
+  onTogglePortMenu,
+  onSelectDevice,
+  onReassignPorts,
+  onReassignIps,
+  onRemoveConnection,
+  onDisconnectFromSwitch,
+}: {
+  ports: PortSpec[] | undefined;
+  devices: ConnectedSwitchDevice[];
+  hoveredConnectionId: string | null;
+  activePortId: string | null;
+  onHoverDevice: (row: ConnectedSwitchDevice | undefined) => void;
+  onTogglePortMenu: (portId: string) => void;
+  onSelectDevice: (deviceId: string) => void;
+  onReassignPorts: () => void;
+  onReassignIps: () => void;
+  onRemoveConnection: (connectionId: string) => void;
+  onDisconnectFromSwitch: (connectionId: string) => void;
+}) {
+  const stripRef = useRef<HTMLDivElement | null>(null);
+  const portRefs = useRef(new Map<string, HTMLButtonElement>());
+  const [menuOffset, setMenuOffset] = useState(4);
+  const networkPorts = (ports ?? []).filter((port) => port.kind === "ethernet" || port.kind === "fiber");
+  const copperPorts = networkPorts.filter((port) => port.kind === "ethernet").slice(0, 48);
+  const sfpPorts = networkPorts.filter((port) => port.kind === "fiber").slice(0, 8);
+  const visiblePorts = [...copperPorts, ...sfpPorts];
+
+  const assignments = new Map<string, ConnectedSwitchDevice>();
+  for (const row of devices) {
+    const port = visiblePorts.find((candidate) => candidate.label === row.switchPort);
+    if (port) assignments.set(port.id, row);
+  }
+  const hoveredDevice = devices.find((row) => row.connection.id === hoveredConnectionId);
+  const activePort = activePortId ? visiblePorts.find((port) => port.id === activePortId) : undefined;
+  const activeRow = activePortId ? assignments.get(activePortId) : undefined;
+
+  useLayoutEffect(() => {
+    if (!activePortId) return;
+
+    const updateMenuOffset = () => {
+      const strip = stripRef.current;
+      const portButton = portRefs.current.get(activePortId);
+      if (!strip || !portButton) return;
+
+      const stripRect = strip.getBoundingClientRect();
+      const portRect = portButton.getBoundingClientRect();
+      const menuWidth = 160;
+      const gutter = 4;
+      const centeredLeft =
+        portRect.left - stripRect.left + portRect.width / 2 - menuWidth / 2;
+      const maxLeft = Math.max(gutter, stripRect.width - menuWidth - gutter);
+      setMenuOffset(clampNumber(centeredLeft, gutter, maxLeft));
+    };
+
+    updateMenuOffset();
+    window.addEventListener("resize", updateMenuOffset);
+    return () => window.removeEventListener("resize", updateMenuOffset);
+  }, [activePortId, visiblePorts.length]);
+
+  if (networkPorts.length === 0) return null;
+
+  const renderPort = (port: PortSpec) => {
+    const row = assignments.get(port.id);
+    const active = row?.connection.id === hoveredConnectionId || port.id === activePortId;
+    return (
+      <div key={port.id}>
+        <button
+          type="button"
+          ref={(node) => {
+            if (node) portRefs.current.set(port.id, node);
+            else portRefs.current.delete(port.id);
+          }}
+          aria-label={row ? `${port.label} assigned to ${row.device.tag}` : `${port.label} available`}
+          onMouseEnter={() => onHoverDevice(row)}
+          onMouseLeave={() => onHoverDevice(undefined)}
+          onClick={() => onTogglePortMenu(port.id)}
+          className={`h-4 w-full rounded-sm border text-[8px] font-mono leading-none transition-colors ${
+            active
+              ? "border-signal-blue bg-signal-blue/30 text-signal-blue"
+              : row
+                ? "border-amber-knox/50 bg-amber-knox/20 text-amber-knox"
+                : "border-white/10 bg-ink-900/50 text-ink-600"
+          }`}
+        >
+          {port.label.replace(/^Port\s*/i, "").replace(/^SFP\s*/i, "S")}
+        </button>
+      </div>
+    );
+  };
+
+  return (
+    <div ref={stripRef} className="rounded-md border border-white/5 bg-ink-950/35 p-2 space-y-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[10px] font-mono uppercase tracking-wider text-ink-400">
+          Switch Ports
+        </div>
+        <div className="text-[10px] text-ink-500 truncate">
+          {hoveredDevice
+            ? `${hoveredDevice.switchPort || "Port"} -> ${hoveredDevice.device.tag}`
+            : `${assignments.size} used / ${visiblePorts.length} available`}
+        </div>
+      </div>
+      <div className="grid grid-cols-12 gap-1">
+        {copperPorts.map(renderPort)}
+      </div>
+      {sfpPorts.length > 0 && (
+        <div className="grid grid-cols-8 gap-1">
+          {sfpPorts.map(renderPort)}
+        </div>
+      )}
+      {activePort && (
+        <div
+          className="w-40 max-w-[calc(100%_-_8px)] rounded-md border border-white/10 bg-ink-900/95 p-1 shadow-panel transition-[margin-left] duration-100"
+          style={{ marginLeft: menuOffset }}
+        >
+          {activeRow ? (
+            <>
+              <div className="px-1.5 py-1 text-[10px] text-ink-400 truncate">
+                {activePort.label} to {activeRow.device.tag}
+              </div>
+              <button
+                type="button"
+                onClick={() => onSelectDevice(activeRow.device.id)}
+                className="w-full rounded px-1.5 py-1 text-left text-[10px] text-ink-100 hover:bg-white/5"
+              >
+                Select device
+              </button>
+              <button
+                type="button"
+                onClick={onReassignIps}
+                className="w-full rounded px-1.5 py-1 text-left text-[10px] text-ink-100 hover:bg-white/5"
+              >
+                Reassign IPs
+              </button>
+              <button
+                type="button"
+                onClick={onReassignPorts}
+                className="w-full rounded px-1.5 py-1 text-left text-[10px] text-ink-100 hover:bg-white/5"
+              >
+                Move ports
+              </button>
+              <button
+                type="button"
+                onClick={() => onDisconnectFromSwitch(activeRow.connection.id)}
+                className="w-full rounded px-1.5 py-1 text-left text-[10px] text-ink-100 hover:bg-white/5"
+              >
+                Disconnect from switch
+              </button>
+              <button
+                type="button"
+                onClick={() => onRemoveConnection(activeRow.connection.id)}
+                className="w-full rounded px-1.5 py-1 text-left text-[10px] text-signal-red hover:bg-signal-red/10"
+              >
+                Remove connection and run
+              </button>
+            </>
+          ) : (
+            <div className="px-1.5 py-1 text-[10px] text-ink-400">
+              {activePort.label} is free. Use Move ports after editing a connection.
+            </div>
+          )}
+        </div>
+      )}
+      <div className="text-[10px] text-ink-500">
+        {activeRow
+          ? "Click a menu action or select a row below to edit IP/VLAN."
+          : copperPorts.length >= 48
+            ? "Showing 48 copper ports plus compact SFP ports."
+            : "Hover a used port to hint its connected device."}
+      </div>
+      {networkPorts.length > visiblePorts.length && (
+        <div className="text-[10px] text-ink-500">
+          + {networkPorts.length - visiblePorts.length} additional network ports not shown.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AccessSection({
   ac,
   patch,
@@ -1933,6 +2554,14 @@ function AccessSection({
   );
 }
 
+function inferAutoStartIp(value: string | undefined): string {
+  const parts = value?.trim().split(".");
+  if (parts?.length === 4 && parts.slice(0, 3).every((part) => /^\d{1,3}$/.test(part))) {
+    return `${parts[0]}.${parts[1]}.${parts[2]}.100`;
+  }
+  return DEFAULT_NETWORK_START_IP;
+}
+
 function SystemConfigSection({
   markup,
   onChange,
@@ -1942,10 +2571,18 @@ function SystemConfigSection({
 }) {
   const addConnection = useProjectStore((s) => s.addConnection);
   const removeConnection = useProjectStore((s) => s.removeConnection);
+  const removeConnectionAndCable = useProjectStore((s) => s.removeConnectionAndCable);
+  const disconnectConnectionFromSwitch = useProjectStore((s) => s.disconnectConnectionFromSwitch);
   const updateConnection = useProjectStore((s) => s.updateConnection);
+  const updateDeviceSystemConfigs = useProjectStore((s) => s.updateDeviceSystemConfigs);
+  const setHintedMarkups = useProjectStore((s) => s.setHintedMarkups);
+  const setSelected = useProjectStore((s) => s.setSelected);
   const connections = useProjectStore((s) => s.project?.connections ?? []);
   const project = useProjectStore((s) => s.project);
   const [open, setOpen] = useState(false);
+  const [autoStartIp, setAutoStartIp] = useState("");
+  const [autoVlan, setAutoVlan] = useState(String(DEFAULT_VLAN));
+  const [portExhaustionMessage, setPortExhaustionMessage] = useState<string | undefined>();
   const [newTo, setNewTo] = useState("");
   const [newFromPortId, setNewFromPortId] = useState("");
   const [newFromPort, setNewFromPort] = useState("");
@@ -1975,7 +2612,17 @@ function SystemConfigSection({
   const accessCfg = cfg.accessControl ?? {};
 
   const cat = markup.category as keyof typeof CATEGORY_SECTIONS;
-  const sections = CATEGORY_SECTIONS[cat] ?? { streams: false, ptz: false, wireless: false, switchCfg: false, access: false };
+  const baseSections = CATEGORY_SECTIONS[cat] ?? { streams: false, ptz: false, wireless: false, switchCfg: false, access: false };
+  const switchLike = isSwitchLikeDevice(markup);
+  const sections = {
+    ...baseSections,
+    switchCfg: baseSections.switchCfg && switchLike,
+    wireless: baseSections.wireless && !switchLike,
+  };
+  const connectedSwitchDevices = useMemo(
+    () => (project && sections.switchCfg ? connectedDevicesForSwitch(project, markup) : []),
+    [project, sections.switchCfg, markup],
+  );
 
   const patchCfg = (patch: Partial<DeviceSystemConfig>) =>
     onChange({ systemConfig: { ...cfg, ...patch } });
@@ -1995,6 +2642,73 @@ function SystemConfigSection({
   const myConns = connections.filter(
     (c) => c.fromTag === markup.tag || c.toTag === markup.tag,
   );
+
+  useEffect(() => {
+    if (!sections.switchCfg) return;
+    if (!autoStartIp) setAutoStartIp(inferAutoStartIp(net.ipAddress ?? net.gateway));
+    if (!autoVlan || autoVlan === String(DEFAULT_VLAN)) {
+      setAutoVlan(String(net.vlan ?? switchCfg.managementVlan ?? DEFAULT_VLAN));
+    }
+  }, [autoStartIp, autoVlan, net.gateway, net.ipAddress, net.vlan, sections.switchCfg, switchCfg.managementVlan]);
+
+  const patchConnectedDevice = (device: DeviceMarkup, patch: Partial<DeviceSystemConfig>) => {
+    updateDeviceSystemConfigs({
+      [device.id]: mergeDeviceConfig(device, patch),
+    });
+  };
+
+  const selectedBulkVlan = () => {
+    const vlan = parseInt(autoVlan);
+    return isFinite(vlan) ? vlan : DEFAULT_VLAN;
+  };
+
+  const autoAssignConnectedIps = (overwrite: boolean) => {
+    if (!project) return;
+    const result = buildAutoIpAssignmentPatches(project, markup, {
+      startIp: autoStartIp || undefined,
+      vlan: selectedBulkVlan(),
+      overwrite,
+    });
+    updateDeviceSystemConfigs(result.patches);
+  };
+
+  const applyConnectedVlan = () => {
+    const vlan = selectedBulkVlan();
+    const patches = Object.fromEntries(
+      connectedSwitchDevices.map(({ device }) => [
+        device.id,
+        mergeDeviceConfig(device, {
+          network: { ...(device.systemConfig?.network ?? {}), vlan },
+        }),
+      ]),
+    );
+    updateDeviceSystemConfigs(patches);
+  };
+
+  const autoAssignConnectedPorts = () => {
+    if (!project) return;
+    const result = buildSwitchPortAssignmentPatches(project, markup, { overwrite: true });
+    for (const [connectionId, patch] of Object.entries(result.patches)) {
+      updateConnection(connectionId, patch);
+    }
+    setPortExhaustionMessage(
+      result.exhausted.length > 0
+        ? `${result.exhausted.length} connected device${result.exhausted.length === 1 ? "" : "s"} could not get a compatible free switch port.`
+        : undefined,
+    );
+  };
+
+  const hintConnectedRow = (row: ConnectedSwitchDevice | undefined) => {
+    if (!row) {
+      setHintedMarkups([]);
+      return;
+    }
+    setHintedMarkups(
+      [row.device.id, row.connection.cableMarkupId].filter(
+        (id): id is string => !!id?.trim(),
+      ),
+    );
+  };
 
   const addConn = () => {
     if (!newTo.trim()) return;
@@ -2065,6 +2779,28 @@ function SystemConfigSection({
 
           {/* ── Switch / router ── */}
           {sections.switchCfg && <SwitchSection sw={switchCfg} patch={patchSwitch} />}
+          {sections.switchCfg && (
+            <ConnectedDevicesSection
+              devices={connectedSwitchDevices}
+              switchPorts={myPorts}
+              startIp={autoStartIp}
+              vlan={autoVlan}
+              onStartIpChange={setAutoStartIp}
+              onVlanChange={setAutoVlan}
+              onAutoAssignAllIps={() => autoAssignConnectedIps(true)}
+              onAutoAssignBlankIps={() => autoAssignConnectedIps(false)}
+              onApplyVlan={applyConnectedVlan}
+              onAutoAssignPorts={autoAssignConnectedPorts}
+              onPatchDevice={patchConnectedDevice}
+              onHintConnection={hintConnectedRow}
+              onSelectDevice={(deviceId) => setSelected([deviceId])}
+              onRemoveConnection={removeConnectionAndCable}
+              onDisconnectFromSwitch={(connectionId) =>
+                disconnectConnectionFromSwitch(connectionId, markup.tag)
+              }
+              portExhaustionMessage={portExhaustionMessage}
+            />
+          )}
 
           {/* ── Access control ── */}
           {sections.access && <AccessSection ac={accessCfg} patch={patchAccess} />}
@@ -2100,13 +2836,21 @@ function SystemConfigSection({
           </CollapsibleGroup>
 
           {/* ── Connections (all devices) ── */}
-          <div className="rounded-md border border-white/5 overflow-hidden">
-            <div className="px-2.5 py-2 bg-ink-900/40 flex items-center gap-1.5">
+          <details
+            {...(!sections.switchCfg ? { open: true } : {})}
+            className="rounded-md border border-white/5 overflow-hidden group/advanced"
+          >
+            <summary className="px-2.5 py-2 bg-ink-900/40 flex items-center gap-1.5 cursor-pointer list-none">
               <Plug className="w-3.5 h-3.5 text-amber-knox" />
               <span className="text-[11px] font-mono uppercase tracking-wider text-ink-200">
-                Connections {myConns.length > 0 && `(${myConns.length})`}
+                {sections.switchCfg ? "Advanced Connections" : "Connections"} {myConns.length > 0 && `(${myConns.length})`}
               </span>
-            </div>
+              {sections.switchCfg && (
+                <span className="ml-auto text-[10px] text-ink-500 normal-case">
+                  Manual tags and port overrides
+                </span>
+              )}
+            </summary>
 
             {myConns.map((c) => {
               const isFrom = c.fromTag === markup.tag;
@@ -2166,8 +2910,12 @@ function SystemConfigSection({
                     >
                       <option value="">— pick port —</option>
                       {myPorts.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.label}
+                        <option
+                          key={p.id}
+                          value={p.id}
+                          disabled={project ? isDevicePortInUse(project, markup, p.id) : false}
+                        >
+                          {p.label}{project && isDevicePortInUse(project, markup, p.id) ? " (used)" : ""}
                         </option>
                       ))}
                       <option value="">Custom…</option>
@@ -2229,7 +2977,7 @@ function SystemConfigSection({
                 </p>
               )}
             </div>
-          </div>
+          </details>
 
         </div>
       )}
@@ -2252,6 +3000,7 @@ function describeMarkup(markup: Markup) {
     arrow: "Arrow",
     polygon: "Polygon",
     freehand: "Freehand",
+    schedule: "Schedule",
   };
   return map[markup.kind] ?? "Markup";
 }

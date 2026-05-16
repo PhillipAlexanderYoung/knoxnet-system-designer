@@ -6,6 +6,7 @@ import {
   type Sheet,
   type Markup,
   type DeviceMarkup,
+  type Project,
 } from "../store/projectStore";
 import { devicesById } from "../data/devices";
 import { cablesById } from "../data/cables";
@@ -27,10 +28,12 @@ import { categoryColor } from "../brand/tokens";
 import {
   clampTagOffset,
   maxTagOffsetDistance,
+  resolveTagStyle,
   resolveTagFontSize,
 } from "../lib/tagDefaults";
 import {
   endpointFromMarkup,
+  nearestCableRunPoint,
   runCountFor,
   runLabelLayoutsFor,
   type RunLabelLayout,
@@ -52,8 +55,13 @@ import {
   nestedBubblePoint,
   nestedBubbleSize,
 } from "../lib/nesting";
+import {
+  scheduleBlockContent,
+  scheduleBlockSize,
+  scheduleRowsForDisplay,
+} from "../lib/scheduleBlocks";
 
-type TagSettings = { tagDefaults?: { fontSize?: number } } | null;
+type TagSettings = Pick<Project, "tagDefaults" | "branding"> | null;
 type HoverHint = { text: string; x: number; y: number; targetKey: string; fading?: boolean };
 type ShowHoverHint = (
   hint: HoverHint,
@@ -67,9 +75,12 @@ const HOVER_HINT_VISIBLE_MS = 3000;
 const HOVER_HINT_FADE_MS = 350;
 
 export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }) {
+  const project = useProjectStore((s) => s.project);
   const tagDefaults = useProjectStore((s) => s.project?.tagDefaults);
   const layers = useProjectStore((s) => s.layers);
   const selected = useProjectStore((s) => s.selectedMarkupIds);
+  const hintedMarkupId = useProjectStore((s) => s.hintedMarkupId);
+  const hintedMarkupIds = useProjectStore((s) => s.hintedMarkupIds);
   const setSelected = useProjectStore((s) => s.setSelected);
   const updateMarkup = useProjectStore((s) => s.updateMarkup);
   const moveDeviceMarkup = useProjectStore((s) => s.moveDeviceMarkup);
@@ -77,9 +88,16 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
   const deleteMarkup = useProjectStore((s) => s.deleteMarkup);
   const activeTool = useProjectStore((s) => s.activeTool);
   const setActiveTool = useProjectStore((s) => s.setActiveTool);
+  const cursor = useProjectStore((s) => s.cursor);
+  const viewport = useProjectStore((s) => s.viewport);
+  const cableRunBulkBranch = useProjectStore((s) => s.cableRunBulkBranch);
   const placeCableRunEndpoint = useProjectStore((s) => s.placeCableRunEndpoint);
   const branchCableRunEndpoint = useProjectStore((s) => s.branchCableRunEndpoint);
   const appendCableRunPath = useProjectStore((s) => s.appendCableRunPath);
+  const beginCableRunBulkBranch = useProjectStore((s) => s.beginCableRunBulkBranch);
+  const toggleCableRunBulkBranchTarget = useProjectStore(
+    (s) => s.toggleCableRunBulkBranchTarget,
+  );
   const freehandErasing = useProjectStore((s) => s.freehandErasing);
   const coverageVisible = useProjectStore((s) => s.coverageVisible);
   const runLabelsVisible = useProjectStore((s) => s.runLabelsVisible);
@@ -156,11 +174,15 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
 
   useEffect(() => () => clearHoverHintTimers(), [clearHoverHintTimers]);
 
-  const tagSettings = useMemo<TagSettings>(
-    () => (tagDefaults ? { tagDefaults } : null),
-    [tagDefaults],
-  );
+  const tagSettings = useMemo<TagSettings>(() => {
+    if (!project) return tagDefaults ? { tagDefaults } : null;
+    return { tagDefaults: project.tagDefaults, branding: project.branding };
+  }, [project, tagDefaults]);
   const selectedSet = useMemo(() => new Set(selected), [selected]);
+  const hintedSet = useMemo(
+    () => new Set([hintedMarkupId, ...hintedMarkupIds].filter(Boolean) as string[]),
+    [hintedMarkupId, hintedMarkupIds],
+  );
   const runLabelLayouts = useMemo(
     () =>
       runLabelLayoutsFor(sheet.markups, {
@@ -195,6 +217,17 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
     (id: string) => layerById[id]?.locked === true,
     [layerById],
   );
+  const eventSheetPoint = useCallback(
+    (e: any) => {
+      const p = e.target?.getStage?.()?.getPointerPosition?.();
+      if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return cursor;
+      return {
+        x: (p.x - viewport.x) / viewport.scale,
+        y: (p.y - viewport.y) / viewport.scale,
+      };
+    },
+    [cursor, viewport],
+  );
 
   // Clicking a placed markup usually selects it, regardless of the active
   // tool. Cable Run is the one placement-mode exception: device clicks become
@@ -214,6 +247,20 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
         return;
       }
       if (activeTool === "cable") {
+        if (e.evt?.shiftKey || cableRunBulkBranch) {
+          if (m.kind === "cable") {
+            const pointer = eventSheetPoint(e);
+            const anchor = pointer ? nearestCableRunPoint(m, pointer) : null;
+            if (anchor) beginCableRunBulkBranch([anchor], m.id);
+            return;
+          }
+          const endpoint = endpointFromMarkup(m, { markups: sheet.markups });
+          if (endpoint) {
+            if (!cableRunBulkBranch) beginCableRunBulkBranch(undefined);
+            toggleCableRunBulkBranchTarget(endpoint);
+          }
+          return;
+        }
         const branchModifier = !!(
           e.evt?.altKey ||
           e.evt?.ctrlKey ||
@@ -248,13 +295,18 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
     [
       activeTool,
       appendCableRunPath,
+      beginCableRunBulkBranch,
       branchCableRunEndpoint,
+      cableRunBulkBranch,
       deleteMarkup,
+      eventSheetPoint,
       freehandErasing,
       placeCableRunEndpoint,
       selected,
       setActiveTool,
       setSelected,
+      sheet.markups,
+      toggleCableRunBulkBranchTarget,
     ],
   );
 
@@ -280,8 +332,10 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
 
       {raisedMarkups.map((m) => {
         if (m.hidden) return null;
+        if (m.kind === "schedule") return null;
         if (isLayerOff(m.layer)) return null;
         const isSel = selectedSet.has(m.id);
+        const isHinted = hintedSet.has(m.id);
         const parent =
           m.kind === "device" && m.parentId
             ? sheet.markups.find(
@@ -299,9 +353,12 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
           <MarkupNode
             key={m.id}
             markup={m}
+            project={project}
+            sheet={sheet}
             calibration={sheet.calibration}
             sheetMarkups={sheet.markups}
             selected={isSel}
+            hinted={isHinted}
             draggable={draggable}
             onMarkupClick={handleMarkupClick}
             updateMarkup={updateMarkup}
@@ -321,6 +378,7 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
           if (m.hidden) return null;
           if (isLayerOff(m.layer)) return null;
           const isSel = selectedSet.has(m.id);
+          const isHinted = hintedSet.has(m.id);
           const parent =
             m.kind === "device" && m.parentId
               ? sheet.markups.find(
@@ -338,9 +396,12 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
             <MarkupNode
               key={`${m.id}-tag`}
               markup={m}
+              project={project}
+              sheet={sheet}
               calibration={sheet.calibration}
               sheetMarkups={sheet.markups}
               selected={isSel}
+              hinted={isHinted}
               draggable={draggable}
               onMarkupClick={handleMarkupClick}
               updateMarkup={updateMarkup}
@@ -348,6 +409,40 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
               notifyLockedDeviceMoveAttempt={notifyLockedDeviceMoveAttempt}
               tagSettings={tagSettings}
               renderPart="tag"
+              onHoverChange={setHoveredMarkupId}
+              showHoverHint={showHoverHint}
+              hideHoverHint={hideHoverHint}
+            />
+          );
+        })}
+      </Group>
+      <Group>
+        {raisedMarkups.map((m) => {
+          if (m.hidden) return null;
+          if (m.kind !== "schedule") return null;
+          if (m.visible === false) return null;
+          if (isLayerOff(m.layer)) return null;
+          const isSel = selectedSet.has(m.id);
+          const isHinted = hintedSet.has(m.id);
+          const draggable =
+            activeTool === "select" && !m.locked && !isLayerLocked(m.layer);
+          return (
+            <MarkupNode
+              key={`${m.id}-schedule`}
+              markup={m}
+              project={project}
+              sheet={sheet}
+              calibration={sheet.calibration}
+              sheetMarkups={sheet.markups}
+              selected={isSel}
+              hinted={isHinted}
+              draggable={draggable}
+              onMarkupClick={handleMarkupClick}
+              updateMarkup={updateMarkup}
+              moveDeviceMarkup={moveDeviceMarkup}
+              notifyLockedDeviceMoveAttempt={notifyLockedDeviceMoveAttempt}
+              tagSettings={tagSettings}
+              renderPart="body"
               onHoverChange={setHoveredMarkupId}
               showHoverHint={showHoverHint}
               hideHoverHint={hideHoverHint}
@@ -393,9 +488,12 @@ const CoverageOverlay = memo(function CoverageOverlay({
 
 const MarkupNode = memo(function MarkupNode({
   markup,
+  project,
+  sheet,
   calibration,
   sheetMarkups,
   selected,
+  hinted,
   draggable,
   onMarkupClick,
   updateMarkup,
@@ -409,9 +507,12 @@ const MarkupNode = memo(function MarkupNode({
   hideHoverHint,
 }: {
   markup: Markup;
+  project: Project | null;
+  sheet: Sheet;
   calibration: Calibration | undefined;
   sheetMarkups?: Markup[];
   selected: boolean;
+  hinted: boolean;
   draggable: boolean;
   onMarkupClick: (m: Markup, e: any) => void;
   updateMarkup: ReturnType<typeof useProjectStore.getState>["updateMarkup"];
@@ -437,7 +538,10 @@ const MarkupNode = memo(function MarkupNode({
       onHoverChange(markup.id);
       const directlyDraggable =
         draggable &&
-        (markup.kind === "device" || markup.kind === "text" || markup.kind === "rect");
+        (markup.kind === "device" ||
+          markup.kind === "text" ||
+          markup.kind === "rect" ||
+          markup.kind === "schedule");
       setStageCursor(e, directlyDraggable ? "grab" : "pointer");
     },
     [dragging, draggable, markup.id, markup.kind, onHoverChange],
@@ -466,11 +570,13 @@ const MarkupNode = memo(function MarkupNode({
     <Group onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
       {renderMarkup(
         markup,
+        project,
+        sheet,
         calibration,
         sheetMarkups ?? [],
         selected,
         draggable,
-        hovered && !dragging,
+        (hovered && !dragging) || hinted,
         handleClick,
         clearHoverForDrag,
         finishHoverDrag,
@@ -489,6 +595,8 @@ const MarkupNode = memo(function MarkupNode({
 
 function renderMarkup(
   m: Markup,
+  project: Project | null,
+  sheet: Sheet,
   calibration: Calibration | undefined,
   sheetMarkups: Markup[],
   selected: boolean,
@@ -507,6 +615,105 @@ function renderMarkup(
   renderPart: MarkupRenderPart = "body",
 ) {
   switch (m.kind) {
+    case "schedule": {
+      if (renderPart === "tag" || !project || m.visible === false) return null;
+      const content = scheduleBlockContent(project, sheet, m);
+      const size = scheduleBlockSize(content, m.mode);
+      const rows = scheduleRowsForDisplay(content, size.maxRows);
+      const tagStyle = resolveTagStyle(tagSettings);
+      const target = sheet.markups.find((candidate) => candidate.id === m.targetId);
+      const accent =
+        target?.kind === "device"
+          ? target.colorOverride ??
+            categoryColor[devicesById[target.deviceId]?.category ?? target.category] ??
+            "#F4B740"
+          : target?.kind === "cable"
+            ? cablesById[target.cableId]?.color ?? "#F4B740"
+            : "#F4B740";
+      return (
+        <Group
+          x={m.x}
+          y={m.y}
+          draggable={draggable}
+          dragDistance={2}
+          onClick={onClick}
+          onTap={onClick}
+          onMouseDown={onClick}
+          onMouseEnter={(e) => {
+            showHoverHint({
+              text: draggable ? "move schedule" : "select schedule",
+              x: m.x + size.width + 6,
+              y: m.y - 12,
+              targetKey: `${m.id}:schedule`,
+            });
+            setStageCursor(e, draggable ? "grab" : "pointer");
+          }}
+          onMouseLeave={(e) => {
+            hideHoverHint();
+            setStageCursor(e, "");
+          }}
+          onDragStart={clearHoverForDrag}
+          onDragEnd={(e) => {
+            updateMarkup(m.id, { x: e.target.x(), y: e.target.y() } as any);
+            finishHoverDrag(e);
+          }}
+        >
+          <Rect
+            width={size.width}
+            height={size.height}
+            fill={tagStyle.fillColor}
+            stroke={selected ? "#F4B740" : accent}
+            strokeWidth={selected ? 1.2 : hovered ? 0.95 : 0.65}
+            cornerRadius={4}
+            opacity={0.94}
+            shadowColor={hovered || selected ? accent : "rgba(0,0,0,0.55)"}
+            shadowBlur={hovered || selected ? 8 : 4}
+            shadowOpacity={hovered || selected ? HOVER_SHADOW_OPACITY : 0.48}
+            perfectDrawEnabled={false}
+          />
+          <Rect
+            width={size.width}
+            height={15}
+            fill={accent}
+            cornerRadius={[4, 4, 0, 0]}
+            opacity={0.96}
+            perfectDrawEnabled={false}
+            listening={false}
+          />
+          <Text
+            x={7}
+            y={4}
+            width={size.width - 14}
+            text={content.title}
+            fontFamily="JetBrains Mono"
+            fontStyle="700"
+            fontSize={6.5}
+            fill={tagStyle.textColor}
+            wrap="none"
+            ellipsis
+            listening={false}
+            perfectDrawEnabled={false}
+          />
+          {rows.map((line, i) => (
+            <Text
+              key={`${m.id}-row-${i}`}
+              x={7}
+              y={19 + i * size.lineHeight}
+              width={size.width - 14}
+              text={line || "No schedule data"}
+              fontFamily="JetBrains Mono"
+              fontSize={size.fontSize}
+              fill={tagStyle.textColor}
+              opacity={content.empty ? 0.62 : 0.88}
+              wrap="none"
+              ellipsis
+              listening={false}
+              perfectDrawEnabled={false}
+            />
+          ))}
+        </Group>
+      );
+    }
     case "device": {
       const dev = devicesById[m.deviceId];
       if (!dev) return null;

@@ -2,7 +2,6 @@ import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
 import {
   devices as deviceCatalog,
-  effectiveDevicePorts,
   type DeviceCategory,
 } from "../data/devices";
 import { cables as cableCatalog } from "../data/cables";
@@ -33,10 +32,14 @@ import {
   rackDeviceIdForNestedDevice,
 } from "../lib/nesting";
 import {
+  buildSwitchPortAssignmentPatches,
+  connectionFromLabel,
+  connectionToLabel,
   findDeviceById,
   findDeviceByTag,
-  findPort,
+  internalEndpointPortLabel,
   nextAvailableInternalPort,
+  withAutoAssignedConnectionPorts,
 } from "../lib/connections";
 import { DEFAULT_CONDUIT_SIZE, DEFAULT_CONDUIT_TYPE } from "../lib/conduit";
 import {
@@ -55,6 +58,11 @@ import {
   normalizeCanvasViewport,
   type CanvasViewport,
 } from "../lib/canvasViewport";
+import {
+  buildAutoIpAssignmentPatches,
+  isSwitchLikeDevice,
+  withDefaultNetworkConfig,
+} from "../lib/networkConfig";
 
 // ───────── Types ─────────
 
@@ -808,6 +816,25 @@ export interface FreehandMarkup extends BaseMarkup {
   thickness: number;
 }
 
+export type ScheduleTargetKind = "device" | "container" | "cable";
+export type ScheduleBlockMode = "compact" | "detailed";
+export type ScheduleBlockPreset = "auto" | "connections" | "routing" | "config";
+
+export interface ScheduleMarkup extends BaseMarkup {
+  kind: "schedule";
+  /** Markup this customer-facing floating schedule reads from. */
+  targetId: string;
+  targetKind: ScheduleTargetKind;
+  x: number;
+  y: number;
+  /** Optional custom title; falls back to the adapter-generated title. */
+  title?: string;
+  mode?: ScheduleBlockMode;
+  preset?: ScheduleBlockPreset;
+  /** Explicit display toggle kept separate from BaseMarkup.hidden for UI clarity. */
+  visible?: boolean;
+}
+
 export type Markup =
   | DeviceMarkup
   | CableMarkup
@@ -818,7 +845,8 @@ export type Markup =
   | RectMarkup
   | ArrowMarkup
   | PolygonMarkup
-  | FreehandMarkup;
+  | FreehandMarkup
+  | ScheduleMarkup;
 
 /** Markup kind discriminator alias — handy for the export-visibility map
  *  below so consumers can iterate every kind without enumerating them. */
@@ -1117,6 +1145,7 @@ interface HistoryState {
 }
 
 interface CableRunBulkBranchState {
+  anchor: CableRunEndpoint | null;
   route: CableRunEndpoint[] | null;
   targetEndpoints: CableRunEndpoint[];
   sourceCableMarkupId?: string;
@@ -1144,6 +1173,8 @@ interface State {
   activeConduitSize: string;
   activeFiberStrandCount: number;
   selectedMarkupIds: string[];
+  hintedMarkupId: string | null;
+  hintedMarkupIds: string[];
   /** Which branding element (if any) is currently selected for drag/resize
    *  on the canvas. Mutually exclusive with `selectedMarkupIds` — selecting
    *  a markup clears this and vice versa. */
@@ -1324,6 +1355,8 @@ interface State {
   deleteMarkup: (id: string) => void;
   deleteSelected: () => void;
   setSelected: (ids: string[]) => void;
+  setHintedMarkup: (id: string | null) => void;
+  setHintedMarkups: (ids: string[]) => void;
 
   toggleLayer: (id: LayerId) => void;
   setLayerLocked: (id: LayerId, locked: boolean) => void;
@@ -1331,11 +1364,14 @@ interface State {
 
   /** Update (or clear) the full system/commissioning config for a device markup */
   setDeviceSystemConfig: (markupId: string, config: DeviceSystemConfig | undefined) => void;
+  updateDeviceSystemConfigs: (configsByMarkupId: Record<string, DeviceSystemConfig>) => void;
 
   /** Project-level device connections */
   addConnection: (conn: DeviceConnection) => void;
   updateConnection: (id: string, patch: Partial<DeviceConnection>) => void;
   removeConnection: (id: string) => void;
+  removeConnectionAndCable: (id: string) => void;
+  disconnectConnectionFromSwitch: (id: string, switchTag: string) => void;
   autoAssignContainerInternalConnections: (containerId: string) => number;
 
   /** Custom report templates */
@@ -1518,6 +1554,8 @@ export const useProjectStore = create<State>()(
     activeConduitSize: DEFAULT_CONDUIT_SIZE,
     activeFiberStrandCount: DEFAULT_FIBER_STRAND_COUNT,
     selectedMarkupIds: [],
+    hintedMarkupId: null,
+    hintedMarkupIds: [],
     selectedBrand: null,
     layers: DEFAULT_LAYERS.map((l) => ({ ...l })),
     cursor: null,
@@ -2331,7 +2369,10 @@ export const useProjectStore = create<State>()(
                 : sh,
             ),
             connections: connection
-              ? [...(cur.project.connections ?? []), connection]
+              ? [
+                  ...(cur.project.connections ?? []),
+                  withAutoAssignedConnectionPorts(cur.project, connection),
+                ]
               : cur.project.connections,
             updatedAt: Date.now(),
           },
@@ -2401,7 +2442,10 @@ export const useProjectStore = create<State>()(
                 : sh,
             ),
             connections: connection
-              ? [...(cur.project.connections ?? []), connection]
+              ? [
+                  ...(cur.project.connections ?? []),
+                  withAutoAssignedConnectionPorts(cur.project, connection),
+                ]
               : cur.project.connections,
             updatedAt: Date.now(),
           },
@@ -2432,9 +2476,11 @@ export const useProjectStore = create<State>()(
       set((s) => {
         if (!s.project || !s.activeSheetId) return s;
         const activeRoute = route === undefined ? (s.cableRunDraft?.points ?? null) : route;
+        const routeCopy = activeRoute ? [...activeRoute] : null;
         return {
           cableRunBulkBranch: {
-            route: activeRoute ? [...activeRoute] : null,
+            anchor: routeCopy?.[routeCopy.length - 1] ?? null,
+            route: routeCopy,
             targetEndpoints: [],
             sourceCableMarkupId,
             baseProject: s.project,
@@ -2446,11 +2492,12 @@ export const useProjectStore = create<State>()(
       const s = get();
       const bulk = s.cableRunBulkBranch;
       if (!s.project || !s.activeSheetId || !s.activeCableId || !bulk) return 0;
-      const route = bulk.route ?? [];
+      const route = bulk.route ?? (bulk.anchor ? [bulk.anchor] : []);
       if (route.length === 0) {
         set({
           cableRunBulkBranch: {
             ...bulk,
+            anchor: endpoint,
             route: [endpoint],
           },
         });
@@ -2514,12 +2561,17 @@ export const useProjectStore = create<State>()(
                 : sh,
             ),
             connections: connection
-              ? [...(cur.project.connections ?? []), connection]
+              ? [
+                  ...(cur.project.connections ?? []),
+                  withAutoAssignedConnectionPorts(cur.project, connection),
+                ]
               : cur.project.connections,
             updatedAt: Date.now(),
           },
           cableRunBulkBranch: {
             ...cur.cableRunBulkBranch,
+            anchor: cur.cableRunBulkBranch.anchor ?? route[route.length - 1],
+            route: cur.cableRunBulkBranch.route ?? route,
             targetEndpoints: [...cur.cableRunBulkBranch.targetEndpoints, endpoint],
             previewCableMarkupIds: [
               ...cur.cableRunBulkBranch.previewCableMarkupIds,
@@ -2641,7 +2693,10 @@ export const useProjectStore = create<State>()(
                 : sh,
             ),
             connections: connection
-              ? [...(cur.project.connections ?? []), connection]
+              ? [
+                  ...(cur.project.connections ?? []),
+                  withAutoAssignedConnectionPorts(cur.project, connection),
+                ]
               : cur.project.connections,
             updatedAt: Date.now(),
           },
@@ -2668,6 +2723,8 @@ export const useProjectStore = create<State>()(
         const markup =
           m.kind === "cable" && !m.physicalLabel?.trim()
             ? assignGeneratedCableLabels([m], s.project)[0]
+            : m.kind === "device"
+              ? withDefaultNetworkConfig(m, s.project)
             : m;
         return {
           history: historyAfterProjectChange(s.history, s.project),
@@ -2937,16 +2994,10 @@ export const useProjectStore = create<State>()(
     deleteMarkup: (id) =>
       set((s) => {
         if (!s.project || !s.activeSheetId) return s;
+        const project = projectWithoutMarkups(s.project, s.activeSheetId, new Set([id]));
         return {
-          project: {
-            ...s.project,
-            sheets: s.project.sheets.map((sh) =>
-              sh.id === s.activeSheetId
-                ? { ...sh, markups: sh.markups.filter((m) => m.id !== id) }
-                : sh,
-            ),
-            updatedAt: Date.now(),
-          },
+          history: historyAfterProjectChange(s.history, s.project),
+          project,
           selectedMarkupIds: s.selectedMarkupIds.filter((sid) => sid !== id),
         };
       }),
@@ -2958,22 +3009,12 @@ export const useProjectStore = create<State>()(
         // The selection set is a flat list of IDs that may refer to either
         // markups OR masks on the active sheet — delete from both so the
         // backspace / delete key reliably removes whatever is highlighted.
+        const project = projectWithoutMarkups(s.project, s.activeSheetId, ids, {
+          removeMaskRegions: true,
+        });
         return {
-          project: {
-            ...s.project,
-            sheets: s.project.sheets.map((sh) =>
-              sh.id === s.activeSheetId
-                ? {
-                    ...sh,
-                    markups: sh.markups.filter((m) => !ids.has(m.id)),
-                    maskRegions: (sh.maskRegions ?? []).filter(
-                      (m) => !ids.has(m.id),
-                    ),
-                  }
-                : sh,
-            ),
-            updatedAt: Date.now(),
-          },
+          history: historyAfterProjectChange(s.history, s.project),
+          project,
           selectedMarkupIds: [],
         };
       }),
@@ -2986,6 +3027,9 @@ export const useProjectStore = create<State>()(
         // time.
         selectedBrand: ids.length > 0 ? null : s.selectedBrand,
       })),
+    setHintedMarkup: (id) => set({ hintedMarkupId: id, hintedMarkupIds: id ? [id] : [] }),
+    setHintedMarkups: (ids) =>
+      set({ hintedMarkupId: ids[0] ?? null, hintedMarkupIds: Array.from(new Set(ids)) }),
 
     toggleLayer: (id) =>
       set((s) => {
@@ -3051,16 +3095,41 @@ export const useProjectStore = create<State>()(
         };
       }),
 
+    updateDeviceSystemConfigs: (configsByMarkupId) =>
+      set((s) => {
+        if (!s.project || Object.keys(configsByMarkupId).length === 0) return s;
+        let changed = false;
+        const project = syncRackSystems({
+          ...s.project,
+          sheets: s.project.sheets.map((sh) => ({
+            ...sh,
+            markups: sh.markups.map((m) => {
+              if (m.kind !== "device" || !(m.id in configsByMarkupId)) return m;
+              changed = true;
+              return { ...m, systemConfig: configsByMarkupId[m.id] };
+            }),
+          })),
+          updatedAt: Date.now(),
+        });
+        if (!changed) return s;
+        return {
+          history: historyAfterProjectChange(s.history, s.project),
+          project,
+        };
+      }),
+
     addConnection: (conn) =>
       set((s) => {
         if (!s.project) return s;
+        const nextConn = withAutoAssignedConnectionPorts(s.project, conn);
+        const projectWithConnection = {
+          ...s.project,
+          connections: [...(s.project.connections ?? []), nextConn],
+          updatedAt: Date.now(),
+        };
         return {
           history: historyAfterProjectChange(s.history, s.project),
-          project: {
-            ...s.project,
-            connections: [...(s.project.connections ?? []), conn],
-            updatedAt: Date.now(),
-          },
+          project: projectWithConnectedDeviceNetworkDefaults(projectWithConnection, nextConn),
         };
       }),
 
@@ -3069,10 +3138,24 @@ export const useProjectStore = create<State>()(
         if (!s.project) return s;
         const previousConn = (s.project.connections ?? []).find((c) => c.id === id);
         if (!previousConn) return s;
-        const nextConn = completeInternalEndpoint(s.project, {
-          ...previousConn,
-          ...patch,
-        });
+        const explicitFromPatch = "fromPortId" in patch || "fromPort" in patch;
+        const explicitToPatch = "toPortId" in patch || "toPort" in patch;
+        const explicitInternalBlankPatch =
+          !!patch.internalEndpoint &&
+          ("portId" in patch.internalEndpoint || "port" in patch.internalEndpoint) &&
+          !patch.internalEndpoint.portId;
+        const nextConn = withAutoAssignedConnectionPorts(
+          s.project,
+          {
+            ...previousConn,
+            ...patch,
+          },
+          {
+            from: !explicitFromPatch,
+            to: !explicitToPatch,
+            internalEndpoint: !explicitInternalBlankPatch,
+          },
+        );
         const projectWithConnection = {
           ...s.project,
           connections: (s.project.connections ?? []).map((c) =>
@@ -3080,22 +3163,48 @@ export const useProjectStore = create<State>()(
           ),
           updatedAt: Date.now(),
         };
+        const anchoredProject = reanchorConnectionCable(projectWithConnection, previousConn, nextConn);
         return {
           history: historyAfterProjectChange(s.history, s.project),
-          project: reanchorConnectionCable(projectWithConnection, previousConn, nextConn),
+          project: projectWithConnectedDeviceNetworkDefaults(anchoredProject, nextConn),
         };
       }),
 
     removeConnection: (id) =>
       set((s) => {
         if (!s.project) return s;
+        const removed = (s.project.connections ?? []).find((c) => c.id === id);
+        if (!removed) return s;
         return {
           history: historyAfterProjectChange(s.history, s.project),
-          project: {
+          project: cleanupSwitchPortAssignmentsForRemovedConnections({
             ...s.project,
             connections: (s.project.connections ?? []).filter((c) => c.id !== id),
             updatedAt: Date.now(),
-          },
+          }, s.project, [removed]),
+        };
+      }),
+
+    removeConnectionAndCable: (id) =>
+      set((s) => {
+        if (!s.project) return s;
+        const removed = (s.project.connections ?? []).find((c) => c.id === id);
+        if (!removed) return s;
+        return {
+          history: historyAfterProjectChange(s.history, s.project),
+          project: projectWithoutConnectionAndLinkedCable(s.project, removed),
+          selectedMarkupIds: s.selectedMarkupIds.filter((selectedId) => selectedId !== removed.cableMarkupId),
+        };
+      }),
+
+    disconnectConnectionFromSwitch: (id, switchTag) =>
+      set((s) => {
+        if (!s.project) return s;
+        const removed = (s.project.connections ?? []).find((c) => c.id === id);
+        if (!removed) return s;
+        return {
+          history: historyAfterProjectChange(s.history, s.project),
+          project: projectWithConnectionDisconnectedFromSwitch(s.project, removed, switchTag),
         };
       }),
 
@@ -3470,24 +3579,72 @@ function cableWithMovedAttachment(
 }
 
 function completeInternalEndpoint(project: Project, conn: DeviceConnection): DeviceConnection {
-  const endpoint = conn.internalEndpoint;
-  if (!endpoint) return conn;
-  const device =
-    findDeviceById(project, endpoint.deviceId) ??
-    findDeviceByTag(project, endpoint.deviceTag);
-  if (!device) return conn;
-  const ports = effectiveDevicePorts(device.deviceId, device.instancePorts);
-  const port = endpoint.portId
-    ? findPort(ports, endpoint.portId)
-    : nextAvailableInternalPort(project, conn, device);
+  return withAutoAssignedConnectionPorts(project, conn, {
+    from: false,
+    to: false,
+    internalEndpoint: true,
+  });
+}
+
+function projectWithConnectedDeviceNetworkDefaults(
+  project: Project,
+  conn: DeviceConnection,
+): Project {
+  const switches = switchDevicesForConnection(project, conn);
+  let nextProject = project;
+  for (const sw of switches) {
+    const portResult = buildSwitchPortAssignmentPatches(nextProject, sw);
+    nextProject = projectWithConnectionPatches(nextProject, portResult.patches);
+    const result = buildAutoIpAssignmentPatches(nextProject, sw);
+    nextProject = projectWithDeviceSystemConfigPatches(nextProject, result.patches);
+  }
+  return nextProject;
+}
+
+function switchDevicesForConnection(project: Project, conn: DeviceConnection): DeviceMarkup[] {
+  const candidates = [
+    findDeviceByTag(project, conn.fromTag),
+    findDeviceByTag(project, conn.toTag),
+    findDeviceById(project, conn.internalEndpoint?.deviceId) ??
+      findDeviceByTag(project, conn.internalEndpoint?.deviceTag ?? ""),
+  ];
+  const seen = new Set<string>();
+  return candidates.filter((device): device is DeviceMarkup => {
+    if (!device || seen.has(device.id) || !isSwitchLikeDevice(device)) return false;
+    seen.add(device.id);
+    return true;
+  });
+}
+
+function projectWithDeviceSystemConfigPatches(
+  project: Project,
+  configsByMarkupId: Record<string, DeviceSystemConfig>,
+): Project {
+  if (Object.keys(configsByMarkupId).length === 0) return project;
+  return syncRackSystems({
+    ...project,
+    sheets: project.sheets.map((sh) => ({
+      ...sh,
+      markups: sh.markups.map((m) =>
+        m.kind === "device" && m.id in configsByMarkupId
+          ? { ...m, systemConfig: configsByMarkupId[m.id] }
+          : m,
+      ),
+    })),
+  });
+}
+
+function projectWithConnectionPatches(
+  project: Project,
+  patchesByConnectionId: Record<string, Partial<DeviceConnection>>,
+): Project {
+  if (Object.keys(patchesByConnectionId).length === 0) return project;
   return {
-    ...conn,
-    internalEndpoint: {
-      ...endpoint,
-      deviceId: device.id,
-      deviceTag: device.tag,
-      ...(port ? { portId: port.id, port: port.label } : {}),
-    },
+    ...project,
+    connections: (project.connections ?? []).map((connection) => {
+      const patch = patchesByConnectionId[connection.id];
+      return patch ? { ...connection, ...patch } : connection;
+    }),
   };
 }
 
@@ -3542,6 +3699,280 @@ function reanchorConnectionCable(
       }),
     })),
   };
+}
+
+function projectWithoutMarkups(
+  project: Project,
+  sheetId: string,
+  ids: Set<string>,
+  options: { removeMaskRegions?: boolean } = {},
+): Project {
+  const sheet = project.sheets.find((sh) => sh.id === sheetId);
+  if (!sheet) return project;
+  const removed = sheet.markups.filter((markup) => ids.has(markup.id));
+  if (removed.length === 0 && !options.removeMaskRegions) return project;
+
+  const removedMarkupIds = new Set(removed.map((markup) => markup.id));
+  const removedCableIds = new Set(
+    removed.filter((markup): markup is CableMarkup => markup.kind === "cable").map((markup) => markup.id),
+  );
+  const removedDevices = removed.filter(
+    (markup): markup is DeviceMarkup => markup.kind === "device",
+  );
+  const removedDeviceIds = new Set(removedDevices.map((device) => device.id));
+  const removedDeviceTags = new Set(
+    removedDevices.map((device) => device.tag).filter((tag): tag is string => !!tag?.trim()),
+  );
+  const removedDeviceLabels = new Set(
+    removedDevices.flatMap((device) =>
+      [device.tag, deviceDisplayName(device), device.labelOverride].filter(
+        (label): label is string => !!label?.trim(),
+      ),
+    ),
+  );
+
+  const removedConnections = (project.connections ?? []).filter((connection) =>
+    connectionRemovedByDeletedMarkup(
+      connection,
+      removedCableIds,
+      removedDeviceIds,
+      removedDeviceTags,
+    ),
+  );
+  const removedConnectionIds = new Set(removedConnections.map((connection) => connection.id));
+  const withoutMarkups: Project = {
+    ...project,
+    sheets: project.sheets.map((sh) => ({
+      ...sh,
+      markups: sh.markups
+        .filter((markup) => !ids.has(markup.id))
+        .filter((markup) => markup.kind !== "schedule" || !removedMarkupIds.has(markup.targetId))
+        .map((markup) =>
+          cleanupMarkupReferencesToDeletedMarkups(
+            markup,
+            removedCableIds,
+            removedDeviceIds,
+            removedDeviceTags,
+            removedDeviceLabels,
+          ),
+        ),
+      maskRegions:
+        options.removeMaskRegions && sh.id === sheetId
+          ? (sh.maskRegions ?? []).filter((mask) => !ids.has(mask.id))
+          : sh.maskRegions,
+    })),
+    connections: (project.connections ?? []).filter(
+      (connection) => !removedConnectionIds.has(connection.id),
+    ),
+    updatedAt: Date.now(),
+  };
+
+  return cleanupSwitchPortAssignmentsForRemovedConnections(
+    syncRackSystems(withoutMarkups),
+    project,
+    removedConnections,
+  );
+}
+
+function connectionRemovedByDeletedMarkup(
+  connection: DeviceConnection,
+  removedCableIds: Set<string>,
+  removedDeviceIds: Set<string>,
+  removedDeviceTags: Set<string>,
+): boolean {
+  if (connection.cableMarkupId && removedCableIds.has(connection.cableMarkupId)) return true;
+  if (removedDeviceTags.has(connection.fromTag) || removedDeviceTags.has(connection.toTag)) return true;
+  const endpoint = connection.internalEndpoint;
+  if (!endpoint) return false;
+  return (
+    removedDeviceIds.has(endpoint.containerId) ||
+    removedDeviceIds.has(endpoint.deviceId) ||
+    removedDeviceTags.has(endpoint.containerTag) ||
+    removedDeviceTags.has(endpoint.deviceTag)
+  );
+}
+
+function cleanupMarkupReferencesToDeletedMarkups(
+  markup: Markup,
+  removedCableIds: Set<string>,
+  removedDeviceIds: Set<string>,
+  removedDeviceTags: Set<string>,
+  removedDeviceLabels: Set<string>,
+): Markup {
+  if (markup.kind === "device") {
+    if (!markup.attachedRunEndpoint || !removedCableIds.has(markup.attachedRunEndpoint.cableMarkupId)) {
+      return markup;
+    }
+    const { attachedRunEndpoint: _attached, ...rest } = markup;
+    return rest as DeviceMarkup;
+  }
+
+  if (markup.kind !== "cable") return markup;
+
+  const pointAttachments = markup.pointAttachments?.map((attachment) => {
+    if (!attachment) return attachment;
+    if (attachment.deviceMarkupId && removedDeviceIds.has(attachment.deviceMarkupId)) return null;
+    if (attachment.deviceTag && removedDeviceTags.has(attachment.deviceTag)) return null;
+    return attachment;
+  });
+  const endpointA = removedDeviceLabels.has(markup.endpointA ?? "") ? undefined : markup.endpointA;
+  const endpointB = removedDeviceLabels.has(markup.endpointB ?? "") ? undefined : markup.endpointB;
+  const servedDevices = markup.servedDevices?.filter((label) => !removedDeviceLabels.has(label));
+
+  return {
+    ...markup,
+    ...(pointAttachments ? { pointAttachments } : {}),
+    endpointA,
+    endpointB,
+    servedDevices: servedDevices && servedDevices.length > 0 ? servedDevices : undefined,
+  };
+}
+
+function cleanupSwitchPortAssignmentsForRemovedConnections(
+  project: Project,
+  previousProject: Project,
+  removedConnections: DeviceConnection[],
+): Project {
+  if (removedConnections.length === 0) return project;
+  const staleAssignments = new Map<string, Set<string>>();
+  for (const connection of removedConnections) {
+    for (const assignment of switchPortAssignmentsForConnection(previousProject, connection)) {
+      const labels = staleAssignments.get(assignment.deviceTag) ?? new Set<string>();
+      labels.add(assignment.switchPortLabel);
+      staleAssignments.set(assignment.deviceTag, labels);
+    }
+  }
+  if (staleAssignments.size === 0) return project;
+
+  return {
+    ...project,
+    sheets: project.sheets.map((sh) => ({
+      ...sh,
+      markups: sh.markups.map((markup) => {
+        if (markup.kind !== "device") return markup;
+        const staleLabels = staleAssignments.get(markup.tag);
+        if (!staleLabels?.has(markup.systemConfig?.switchPort ?? "")) return markup;
+        return {
+          ...markup,
+          systemConfig: withoutSwitchPortConfig(markup.systemConfig),
+        };
+      }),
+    })),
+  };
+}
+
+function switchPortAssignmentsForConnection(
+  project: Project,
+  connection: DeviceConnection,
+): Array<{ deviceTag: string; switchPortLabel: string }> {
+  const assignments: Array<{ deviceTag: string; switchPortLabel: string }> = [];
+  const fromDevice = findDeviceByTag(project, connection.fromTag);
+  const toDevice = findDeviceByTag(project, connection.toTag);
+
+  if (fromDevice && isSwitchLikeDevice(fromDevice)) {
+    const label = switchPortSystemLabel(connection.fromTag, connectionFromLabel(connection, project));
+    if (label) assignments.push({ deviceTag: connection.toTag, switchPortLabel: label });
+  }
+  if (toDevice && isSwitchLikeDevice(toDevice)) {
+    const label = switchPortSystemLabel(connection.toTag, connectionToLabel(connection, project));
+    if (label) assignments.push({ deviceTag: connection.fromTag, switchPortLabel: label });
+  }
+
+  const endpoint = connection.internalEndpoint;
+  const internalDevice =
+    findDeviceById(project, endpoint?.deviceId) ??
+    findDeviceByTag(project, endpoint?.deviceTag ?? "");
+  if (endpoint && internalDevice && isSwitchLikeDevice(internalDevice)) {
+    const otherTag = connection.fromTag === endpoint.containerTag ? connection.toTag : connection.fromTag;
+    const label = switchPortSystemLabel(endpoint.deviceTag, internalEndpointPortLabel(connection, project));
+    if (label) assignments.push({ deviceTag: otherTag, switchPortLabel: label });
+  }
+
+  return assignments;
+}
+
+function switchPortSystemLabel(
+  switchTag: string | undefined,
+  switchPort: string | undefined,
+): string | undefined {
+  return switchTag?.trim() && switchPort?.trim()
+    ? `${switchTag.trim()} ${switchPort.trim()}`
+    : undefined;
+}
+
+function withoutSwitchPortConfig(
+  config: DeviceSystemConfig | undefined,
+): DeviceSystemConfig | undefined {
+  if (!config?.switchPort) return config;
+  const { switchPort: _switchPort, ...rest } = config;
+  return Object.keys(rest).length > 0 ? rest : undefined;
+}
+
+function projectWithoutConnectionAndLinkedCable(
+  project: Project,
+  connection: DeviceConnection,
+): Project {
+  if (connection.cableMarkupId) {
+    const sheet = project.sheets.find((candidate) =>
+      candidate.markups.some((markup) => markup.id === connection.cableMarkupId),
+    );
+    if (sheet) {
+      return projectWithoutMarkups(project, sheet.id, new Set([connection.cableMarkupId]));
+    }
+  }
+  return cleanupSwitchPortAssignmentsForRemovedConnections(
+    {
+      ...project,
+      connections: (project.connections ?? []).filter((candidate) => candidate.id !== connection.id),
+      updatedAt: Date.now(),
+    },
+    project,
+    [connection],
+  );
+}
+
+function projectWithConnectionDisconnectedFromSwitch(
+  project: Project,
+  connection: DeviceConnection,
+  switchTag: string,
+): Project {
+  const switchTagKey = switchTag.trim();
+  if (!switchTagKey) return project;
+  let disconnectedConnection: DeviceConnection | null = null;
+  const nextConnections = (project.connections ?? []).flatMap((candidate) => {
+    if (candidate.id !== connection.id) return [candidate];
+    const next = connectionDisconnectedFromSwitch(candidate, switchTagKey);
+    if (!next) {
+      disconnectedConnection = candidate;
+      return [];
+    }
+    disconnectedConnection = candidate;
+    return [next];
+  });
+  if (!disconnectedConnection) return project;
+  return cleanupSwitchPortAssignmentsForRemovedConnections(
+    {
+      ...project,
+      connections: nextConnections,
+      updatedAt: Date.now(),
+    },
+    project,
+    [disconnectedConnection],
+  );
+}
+
+function connectionDisconnectedFromSwitch(
+  connection: DeviceConnection,
+  switchTag: string,
+): DeviceConnection | null {
+  if (connection.internalEndpoint?.deviceTag === switchTag) {
+    const { internalEndpoint: _internalEndpoint, ...rest } = connection;
+    return rest;
+  }
+  if (connection.fromTag === switchTag || connection.toTag === switchTag) {
+    return null;
+  }
+  return connection;
 }
 
 function syncRackSystems(project: Project): Project {
@@ -3715,6 +4146,8 @@ type HotStateSnapshot = Pick<
   | "activeConduitSize"
   | "activeFiberStrandCount"
   | "selectedMarkupIds"
+  | "hintedMarkupId"
+  | "hintedMarkupIds"
   | "selectedBrand"
   | "layers"
   | "cursor"
@@ -3755,6 +4188,8 @@ function hotSnapshot(s: State): HotStateSnapshot {
     activeConduitSize: s.activeConduitSize,
     activeFiberStrandCount: s.activeFiberStrandCount,
     selectedMarkupIds: s.selectedMarkupIds,
+    hintedMarkupId: s.hintedMarkupId,
+    hintedMarkupIds: s.hintedMarkupIds,
     selectedBrand: s.selectedBrand,
     layers: s.layers,
     cursor: s.cursor,

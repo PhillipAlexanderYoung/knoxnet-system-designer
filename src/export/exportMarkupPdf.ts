@@ -63,6 +63,11 @@ import {
   resolveTagStyle,
   type ResolvedTagStyle,
 } from "../lib/tagDefaults";
+import {
+  scheduleBlockContent,
+  scheduleBlockSize,
+  scheduleRowsForDisplay,
+} from "../lib/scheduleBlocks";
 
 /**
  * Builds and downloads a branded multi-sheet PDF:
@@ -135,6 +140,7 @@ export async function exportMarkupPdf(project: Project) {
         drawMarkupsOnPage(
           page,
           sheet,
+          project,
           project.exportVisibility,
           fonts,
           project.tagDefaults?.fontSize,
@@ -651,6 +657,7 @@ function drawMasksOnPage(page: PDFPage, sheet: Sheet) {
 function drawMarkupsOnPage(
   page: PDFPage,
   sheet: Sheet,
+  project: Project,
   exportVisibility: ExportVisibility | undefined,
   fonts: BrandFonts,
   projectTagFontDefault: number | undefined,
@@ -707,12 +714,14 @@ function drawMarkupsOnPage(
   const orderedMarkups = sortMarkupsForRender(sheet.markups, layers);
   for (const m of orderedMarkups) {
     if (m.hidden) continue;
+    if (m.kind === "schedule") continue;
     if (!isKindVisible(m)) continue;
     try {
       drawSingleMarkup(
         page,
         sheet,
         m,
+        project,
         tagLayouts,
         runLabelLayouts,
         fonts,
@@ -737,6 +746,7 @@ function drawMarkupsOnPage(
         page,
         sheet,
         m,
+        project,
         tagLayouts,
         runLabelLayouts,
         fonts,
@@ -747,6 +757,29 @@ function drawMarkupsOnPage(
     } catch (e) {
       console.error(
         `[export] device tag (${m.id}) on "${sheet.name}" failed:`,
+        e,
+      );
+    }
+  }
+  for (const m of orderedMarkups) {
+    if (m.hidden || m.kind !== "schedule" || m.visible === false) continue;
+    if (!isKindVisible(m)) continue;
+    try {
+      drawSingleMarkup(
+        page,
+        sheet,
+        m,
+        project,
+        tagLayouts,
+        runLabelLayouts,
+        fonts,
+        tagStyle,
+        connections,
+        "body",
+      );
+    } catch (e) {
+      console.error(
+        `[export] schedule (${m.id}) on "${sheet.name}" failed:`,
         e,
       );
     }
@@ -1274,6 +1307,7 @@ function drawSingleMarkup(
   page: PDFPage,
   sheet: Sheet,
   m: Markup,
+  project: Project,
   tagLayouts: Map<string, TagLayout>,
   runLabelLayouts: Map<string, RunLabelLayout>,
   fonts: BrandFonts,
@@ -1283,6 +1317,68 @@ function drawSingleMarkup(
 ) {
   // Convert all coords from PDF-down (our markup space) to pdf-lib up
   const py = (yDown: number) => sheet.pageHeight - yDown;
+
+  if (m.kind === "schedule") {
+    if (m.visible === false) return;
+    const content = scheduleBlockContent(project, sheet, m);
+    const size = scheduleBlockSize(content, m.mode, (text, fontSize) =>
+      fonts.mono.widthOfTextAtSize(safeText(text), fontSize),
+    );
+    const rows = scheduleRowsForDisplay(content, size.maxRows).map(safeText);
+    const title = safeText(content.title);
+    const target = sheet.markups.find((candidate) => candidate.id === m.targetId);
+    const accentHex =
+      target?.kind === "device"
+        ? target.colorOverride ??
+          categoryColor[devicesById[target.deviceId]?.category ?? target.category] ??
+          "#F4B740"
+        : target?.kind === "cable"
+          ? cablesById[target.cableId]?.color ?? "#F4B740"
+          : "#F4B740";
+    const accent = hex(accentHex);
+    const x = m.x;
+    const y = py(m.y) - size.height;
+    page.drawRectangle({
+      x,
+      y,
+      width: size.width,
+      height: size.height,
+      color: hex(tagStyle.fillColor),
+      borderColor: accent,
+      borderWidth: 0.45,
+      opacity: 0.94,
+    });
+    page.drawRectangle({
+      x,
+      y: y + size.height - 15,
+      width: size.width,
+      height: 15,
+      color: accent,
+      opacity: 0.96,
+    });
+    page.drawText(title, {
+      x: x + 7,
+      y: y + size.height - 11,
+      size: 6.5,
+      font: fonts.mono,
+      color: hex(tagStyle.textColor),
+    });
+    rows.forEach((line, i) => {
+      const clipped =
+        fonts.mono.widthOfTextAtSize(line, size.fontSize) > size.width - 14
+          ? `${line.slice(0, 34)}...`
+          : line;
+      page.drawText(clipped || "No schedule data", {
+        x: x + 7,
+        y: y + size.height - 24 - i * size.lineHeight,
+        size: size.fontSize,
+        font: fonts.mono,
+        color: hex(tagStyle.textColor),
+        opacity: content.empty ? 0.62 : 0.88,
+      });
+    });
+    return;
+  }
 
   if (m.kind === "device") {
     const dev = devicesById[m.deviceId];

@@ -14,6 +14,7 @@ import { reportToCsv } from "../src/reports/formats/csv";
 import { reportToJson } from "../src/reports/formats/json";
 import { reportToMarkdown } from "../src/reports/formats/markdown";
 import { reportToHtml } from "../src/reports/formats/html";
+import { withAutoAssignedConnectionPorts } from "../src/lib/connections";
 import type { Project, ReportTemplate } from "../src/store/projectStore";
 
 function mkProject(): Project {
@@ -261,6 +262,59 @@ describe("selectEntities", () => {
     expect(switchPort).toMatchObject({
       isConnected: true,
       connectedTo: "BR-01",
+    });
+  });
+
+  it("surfaces auto-assigned port labels in reports and area schedules", () => {
+    const p = mkProject();
+    p.sheets[0].markups.push(
+      {
+        id: "m4",
+        kind: "device",
+        deviceId: "net-headend",
+        category: "network",
+        x: 400,
+        y: 400,
+        tag: "HE-01",
+        layer: "network",
+        nestedScheduleName: "MDF-1 Schedule",
+        showNestedDevices: true,
+      },
+      {
+        id: "m5",
+        kind: "device",
+        deviceId: "net-switch-poe",
+        category: "network",
+        x: 420,
+        y: 400,
+        tag: "SW-01",
+        layer: "network",
+        parentId: "m4",
+      },
+    );
+    const ap = p.sheets[0].markups.find((m) => m.id === "m3") as any;
+    ap.parentId = "m4";
+    p.connections = [
+      withAutoAssignedConnectionPorts(p, {
+        id: "auto-ap",
+        fromTag: "AP-01",
+        toTag: "SW-01",
+        medium: "cat6",
+      }),
+    ];
+
+    const connectionRows = selectEntities(p, "connections");
+    expect(connectionRows.find((row) => row.id === "auto-ap")).toMatchObject({
+      fromPortId: "eth0",
+      fromPortResolved: "ETH 0 (PoE in)",
+      toPortId: "port-1",
+      toPortResolved: "Port 1",
+    });
+
+    const scheduleRows = selectEntities(p, "areaSchedules");
+    expect(scheduleRows[0]).toMatchObject({
+      deviceTag: "AP-01",
+      connections: "SW-01 (ETH 0 (PoE in))",
     });
   });
 

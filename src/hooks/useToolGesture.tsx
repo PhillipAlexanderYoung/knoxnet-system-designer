@@ -72,6 +72,9 @@ export function useToolGesture(
   const clearCableRunDraft = useProjectStore((s) => s.clearCableRunDraft);
   const finishCableRunDraft = useProjectStore((s) => s.finishCableRunDraft);
   const beginCableRunBulkBranch = useProjectStore((s) => s.beginCableRunBulkBranch);
+  const toggleCableRunBulkBranchTarget = useProjectStore(
+    (s) => s.toggleCableRunBulkBranchTarget,
+  );
   const commitCableRunBulkBranch = useProjectStore((s) => s.commitCableRunBulkBranch);
   const cancelCableRunBulkBranch = useProjectStore((s) => s.cancelCableRunBulkBranch);
 
@@ -281,6 +284,11 @@ export function useToolGesture(
       const last = draftPoints?.[draftPoints.length - 1];
       if (ortho && last) {
         pt = orthoSnap(last, c);
+      }
+      if (e.evt?.shiftKey || cableRunBulkBranch) {
+        if (!cableRunBulkBranch) beginCableRunBulkBranch(undefined);
+        toggleCableRunBulkBranchTarget(pt);
+        return;
       }
       placeCableRunEndpoint(pt);
       return;
