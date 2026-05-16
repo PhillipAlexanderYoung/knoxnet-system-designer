@@ -33,6 +33,19 @@ export function useGlobalHotkeys() {
       }
       const s = useProjectStore.getState();
 
+      // Cmd/Ctrl+Z → project undo; Cmd/Ctrl+Shift+Z or Cmd/Ctrl+Y → redo
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) s.redo();
+        else s.undo();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        s.redo();
+        return;
+      }
+
       // Cmd/Ctrl+K → command palette
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();

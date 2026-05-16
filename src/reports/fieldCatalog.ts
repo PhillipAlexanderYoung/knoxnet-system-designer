@@ -9,6 +9,7 @@
  */
 
 import type { ReportScope } from "../store/projectStore";
+import { CONDUIT_TYPES } from "../lib/conduit";
 
 export type FieldType =
   | "string"
@@ -44,6 +45,10 @@ const DEVICE_FIELDS: FieldDef[] = [
   { path: "shortCode", label: "Short Code", type: "string" },
   { path: "sheetName", label: "Sheet", type: "string", help: "Sheet this device lives on" },
   { path: "sheetId", label: "Sheet ID", type: "string" },
+  { path: "parentTag", label: "Contained In", type: "string", help: "Tag of the parent Rack, Enclosure, Head End, or container" },
+  { path: "parentLabel", label: "Container Label", type: "string" },
+  { path: "nestedDeviceCount", label: "Nested Device Count", type: "number" },
+  { path: "nestedDevices", label: "Nested Devices", type: "string" },
   { path: "x", label: "X (drawing units)", type: "number" },
   { path: "y", label: "Y (drawing units)", type: "number" },
   { path: "rotation", label: "Rotation (deg)", type: "number" },
@@ -131,10 +136,27 @@ const CABLE_FIELDS: FieldDef[] = [
   { path: "id", label: "ID", type: "string" },
   { path: "cableId", label: "Cable Type", type: "string" },
   { path: "cableLabel", label: "Cable Label", type: "string" },
+  {
+    path: "physicalLabel",
+    label: "Physical Label",
+    type: "string",
+    help: "Real-world cable/fiber/conduit label to print or apply in the field",
+  },
+  {
+    path: "conduitType",
+    label: "Conduit Type",
+    type: "enum",
+    enumValues: [...CONDUIT_TYPES],
+  },
+  { path: "conduitSize", label: "Conduit Size", type: "string" },
   { path: "sheetName", label: "Sheet", type: "string" },
   { path: "sheetId", label: "Sheet ID", type: "string" },
+  { path: "runCount", label: "Run Count", type: "number" },
+  { path: "fiberStrandCount", label: "Fiber Strand Count", type: "number" },
   { path: "lengthFt", label: "Length (ft)", type: "number" },
+  { path: "serviceLoopFt", label: "Service Loop (ft)", type: "number" },
   { path: "lengthFtWithSlack", label: "Length w/ Slack (ft)", type: "number" },
+  { path: "carriedByConduit", label: "Carried By Conduit", type: "string" },
   { path: "connector", label: "Connector", type: "string" },
   { path: "endpointA", label: "Endpoint A", type: "string" },
   { path: "endpointB", label: "Endpoint B", type: "string" },
@@ -154,6 +176,19 @@ const CONNECTION_FIELDS: FieldDef[] = [
   { path: "medium", label: "Medium", type: "string" },
   { path: "label", label: "Label", type: "string" },
   { path: "notes", label: "Notes", type: "string" },
+];
+
+const AREA_SCHEDULE_FIELDS: FieldDef[] = [
+  { path: "areaTag", label: "Area Tag", type: "string" },
+  { path: "areaName", label: "Area Schedule", type: "string" },
+  { path: "areaLabel", label: "Area Label", type: "string" },
+  { path: "deviceTag", label: "Device Tag", type: "string" },
+  { path: "deviceName", label: "Device", type: "string" },
+  { path: "deviceLabel", label: "Catalog Label", type: "string" },
+  { path: "category", label: "Category", type: "string" },
+  { path: "connections", label: "Connections", type: "string" },
+  { path: "connectionCount", label: "Connection Count", type: "number" },
+  { path: "sheetName", label: "Sheet", type: "string" },
 ];
 
 const RACK_FIELDS: FieldDef[] = [
@@ -214,6 +249,7 @@ export const FIELD_CATALOG: Record<ReportScope, FieldDef[]> = {
   devices: DEVICE_FIELDS,
   cables: CABLE_FIELDS,
   connections: CONNECTION_FIELDS,
+  areaSchedules: AREA_SCHEDULE_FIELDS,
   racks: RACK_FIELDS,
   rackPlacements: RACK_PLACEMENT_FIELDS,
   sheets: SHEET_FIELDS,
@@ -224,6 +260,7 @@ export const SCOPE_LABEL: Record<ReportScope, string> = {
   devices: "Devices",
   cables: "Cable Runs",
   connections: "Connections",
+  areaSchedules: "Area Schedules",
   racks: "Racks",
   rackPlacements: "Rack Placements",
   sheets: "Sheets",

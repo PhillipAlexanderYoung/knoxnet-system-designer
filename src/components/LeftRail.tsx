@@ -22,6 +22,8 @@ import {
   ListChecks,
   Share2,
   ClipboardList,
+  ChevronUp,
+  ChevronDown,
 } from "lucide-react";
 import { categoryColor } from "../brand/tokens";
 import { ReportsTab } from "./reports/ReportsTab";
@@ -38,6 +40,7 @@ export function LeftRail() {
   const layers = useProjectStore((s) => s.layers);
   const toggleLayer = useProjectStore((s) => s.toggleLayer);
   const setLayerLocked = useProjectStore((s) => s.setLayerLocked);
+  const moveLayer = useProjectStore((s) => s.moveLayer);
   const pushToast = useProjectStore((s) => s.pushToast);
   const [tab, setTab] = useState<Tab>("sheets");
 
@@ -174,11 +177,11 @@ export function LeftRail() {
         <div className="flex-1 overflow-y-auto p-3 space-y-1">
           <div className="px-2 pb-1 label">Editor Layers</div>
           <p className="px-2 pb-1.5 text-[10px] text-ink-400 leading-relaxed">
-            Hide a layer to declutter the canvas. Layer visibility only
-            affects the editor — toggle export visibility per markup type
-            in the panel below.
+            Top layers draw over lower layers. Move Cable Runs below device
+            layers to keep equipment visible, or hide a layer to declutter
+            the canvas.
           </p>
-          {layers.map((l) => (
+          {layers.map((l, index) => (
             <div
               key={l.id}
               className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-white/5"
@@ -192,6 +195,24 @@ export function LeftRail() {
               >
                 {l.label}
               </span>
+              <div className="flex items-center gap-0.5">
+                <button
+                  onClick={() => moveLayer(l.id, "up")}
+                  disabled={index === 0}
+                  className="text-ink-400 hover:text-ink-100 disabled:text-ink-700 disabled:cursor-not-allowed"
+                  title="Move layer up"
+                >
+                  <ChevronUp className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={() => moveLayer(l.id, "down")}
+                  disabled={index === layers.length - 1}
+                  className="text-ink-400 hover:text-ink-100 disabled:text-ink-700 disabled:cursor-not-allowed"
+                  title="Move layer down"
+                >
+                  <ChevronDown className="w-3.5 h-3.5" />
+                </button>
+              </div>
               <button
                 onClick={() => toggleLayer(l.id)}
                 className="text-ink-400 hover:text-ink-100"

@@ -31,6 +31,7 @@ const ALL_SCOPES: ReportScope[] = [
   "devices",
   "cables",
   "connections",
+  "areaSchedules",
   "racks",
   "rackPlacements",
   "sheets",

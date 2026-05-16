@@ -466,6 +466,24 @@ export const devices: DeviceType[] = [
     },
   },
   {
+    id: "net-rack",
+    label: "Rack",
+    shortCode: "RACK",
+    category: "network",
+    subcategory: "Infrastructure",
+    keywords: ["equipment rack", "data rack", "rack system"],
+    defaultCost: 1850,
+    laborHours: 4.0,
+    icon: {
+      paths: [
+        { d: "M5 3 h14 v18 h-14 z", fill: "currentFill" },
+        { d: "M5 3 h14 v18 h-14 z", stroke: "currentStroke", strokeWidth: 1.5 },
+        { d: "M7 6 h10 M7 9 h10 M7 12 h10 M7 15 h10 M7 18 h10", stroke: "currentStroke", strokeWidth: 1 },
+        { d: "M5 5 h2 M17 5 h2 M5 19 h2 M17 19 h2", stroke: "currentStroke", strokeWidth: 0.8 },
+      ],
+    },
+  },
+  {
     id: "net-ups",
     label: "UPS",
     shortCode: "UPS",
@@ -646,6 +664,42 @@ export const devices: DeviceType[] = [
       paths: [
         { d: "M5 7 h14 v10 h-14 z", fill: "currentFill" },
         { d: "M5 7 h14 v10 h-14 z", stroke: "currentStroke", strokeWidth: 1.5 },
+      ],
+    },
+  },
+  {
+    id: "site-junction-box",
+    label: "Junction Box",
+    shortCode: "JB",
+    category: "site",
+    subcategory: "Distribution",
+    keywords: ["junction box", "j-box", "splice box", "route point"],
+    defaultCost: 95,
+    laborHours: 0.75,
+    icon: {
+      paths: [
+        { d: "M5 5 h14 v14 h-14 z", fill: "currentFill" },
+        { d: "M5 5 h14 v14 h-14 z", stroke: "currentStroke", strokeWidth: 1.5 },
+        { d: "M8 8 h8 v8 h-8 z", fill: "none", stroke: "currentStroke", strokeWidth: 0.8 },
+        { d: "M12 5 v14 M5 12 h14", stroke: "currentStroke", strokeWidth: 0.6 },
+      ],
+    },
+  },
+  {
+    id: "site-weatherproof-enclosure",
+    label: "Weatherproof Enclosure",
+    shortCode: "WPE",
+    category: "site",
+    subcategory: "Distribution",
+    keywords: ["weatherproof enclosure", "nema", "outdoor enclosure", "junction box"],
+    defaultCost: 325,
+    laborHours: 1.75,
+    icon: {
+      paths: [
+        { d: "M4 5 h16 v14 h-16 z", fill: "currentFill" },
+        { d: "M4 5 h16 v14 h-16 z", stroke: "currentStroke", strokeWidth: 1.5 },
+        { d: "M7 8 h10 v8 h-10 z", fill: "none", stroke: "currentStroke", strokeWidth: 0.8 },
+        { d: "M9 5 v-2 h6 v2 M8 12 h8", stroke: "currentStroke", strokeWidth: 0.8 },
       ],
     },
   },

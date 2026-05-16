@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   useProjectStore,
   selectActiveSheet,
+  type CableMarkup,
   type Markup,
   type DeviceMarkup,
   type DeviceCoverageOverride,
@@ -22,6 +23,38 @@ import {
 } from "../lib/connections";
 import { clampTagOffset, resolveTagFontSize } from "../lib/tagDefaults";
 import { cables, cablesById } from "../data/cables";
+import {
+  CONDUIT_SIZES,
+  CONDUIT_TYPES,
+  DEFAULT_CONDUIT_SIZE,
+  DEFAULT_CONDUIT_TYPE,
+  approximateConduitFill,
+  conduitLabelFor,
+} from "../lib/conduit";
+import {
+  fiberStrandCountFor,
+  isFiberCableId,
+  normalizeFiberStrandCount,
+} from "../lib/fiber";
+import {
+  cableLengthBreakdown,
+  carriedByConduits,
+  conduitCarrySummaries,
+  isRouteInfrastructureMarkup,
+  routeSummariesForDevice,
+  runCountFor,
+} from "../lib/cableRuns";
+import {
+  canNestDeviceIn,
+  deviceDisplayName,
+  isContainerDevice,
+  isNestableDevice,
+  isRackDevice,
+  nestedChildren,
+  nestedConnectionSummary,
+  nestedScheduleTitle,
+} from "../lib/nesting";
+import { formatFeetDecimal } from "../lib/geometry";
 import { categoryColor, categoryLabel } from "../brand/tokens";
 import { resolveCoverage, type EffectiveCoverage } from "../lib/coverage";
 import {
@@ -61,10 +94,11 @@ export function PropertiesPanel() {
   const addMarkup = useProjectStore((s) => s.addMarkup);
   const nextTag = useProjectStore((s) => s.nextTag);
 
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
   const selectedMarkups = useMemo(() => {
     if (!sheet) return [];
-    return sheet.markups.filter((m) => selected.includes(m.id));
-  }, [sheet, selected]);
+    return sheet.markups.filter((m) => selectedSet.has(m.id));
+  }, [sheet, selectedSet]);
 
   const single = selectedMarkups.length === 1 ? selectedMarkups[0] : null;
   const multi = selectedMarkups.length > 1 ? selectedMarkups : null;
@@ -392,7 +426,7 @@ function SingleMarkupEditor({
   return (
     <>
       <div className="flex items-center justify-between">
-        <SectionTitle>{describeKind(markup.kind)}</SectionTitle>
+        <SectionTitle>{describeMarkup(markup)}</SectionTitle>
         <div className="flex items-center gap-1">
           <button
             onClick={() => onChange({ locked: !markup.locked })}
@@ -453,10 +487,33 @@ function DeviceProps({
   onChange: (p: Partial<DeviceMarkup>) => void;
 }) {
   const dev = devicesById[markup.deviceId];
+  const disconnectRouteInfrastructure = useProjectStore(
+    (s) => s.disconnectRouteInfrastructure,
+  );
+  const updateMarkup = useProjectStore((s) => s.updateMarkup);
+  const sheet = useProjectStore(selectActiveSheet);
+  const connections = useProjectStore((s) => s.project?.connections ?? []);
   if (!dev) return null;
   const color = markup.colorOverride ?? categoryColor[dev.category] ?? "#94A0B8";
   const size = markup.size ?? 28;
   const layers = useProjectStore.getState().layers;
+  const isRouteInfra = isRouteInfrastructureMarkup(markup);
+  const routeSummaries =
+    isRouteInfra && sheet ? routeSummariesForDevice(sheet, markup) : [];
+  const containers =
+    sheet?.markups.filter(
+      (m): m is DeviceMarkup =>
+        m.kind === "device" && canNestDeviceIn(markup, m, sheet.markups),
+    ) ?? [];
+  const parent =
+    markup.parentId && sheet
+      ? sheet.markups.find(
+          (m): m is DeviceMarkup => m.kind === "device" && m.id === markup.parentId,
+        )
+      : null;
+  const children = sheet ? nestedChildren(sheet.markups, markup.id) : [];
+  const canBeNested = sheet ? isNestableDevice(markup) : false;
+  const canContain = sheet ? isContainerDevice(markup) : false;
 
   return (
     <>
@@ -501,6 +558,188 @@ function DeviceProps({
           placeholder="e.g. Bandshell East"
         />
       </Field>
+
+      {(canBeNested || canContain || parent || children.length > 0) && (
+        <div className="rounded-md border border-white/5 bg-ink-900/35 px-2 py-2 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[10px] font-mono uppercase tracking-wider text-amber-knox">
+              Nested Devices
+            </div>
+            {parent && (
+              <button
+                onClick={() => onChange({ parentId: undefined })}
+                className="text-[10px] font-mono text-ink-400 hover:text-ink-50"
+              >
+                Unnest
+              </button>
+            )}
+          </div>
+
+          {canBeNested && (
+            <Field label="Contained In" hint="logical">
+              <select
+                className="input"
+                value={markup.parentId ?? ""}
+                onChange={(e) =>
+                  onChange({ parentId: e.target.value || undefined })
+                }
+              >
+                <option value="">None</option>
+                {containers.map((container) => (
+                  <option key={container.id} value={container.id}>
+                    {deviceDisplayName(container)}
+                  </option>
+                ))}
+              </select>
+              <p className="text-[10px] text-ink-500 leading-snug mt-1">
+                Drag this device onto a container to show it as a persistent
+                Nested Device bubble. Only the Rack device creates a Rack entry.
+              </p>
+            </Field>
+          )}
+
+          {canContain && (
+            <div className="space-y-2">
+              <Field label="Schedule Name" hint="optional">
+                <input
+                  className="input"
+                  value={markup.nestedScheduleName ?? ""}
+                  onChange={(e) =>
+                    onChange({ nestedScheduleName: e.target.value || undefined })
+                  }
+                  placeholder={`${markup.tag || "HE-01"} Schedule`}
+                />
+              </Field>
+              <label className="flex items-start gap-2 text-[11px] text-ink-300">
+                <input
+                  type="checkbox"
+                  checked={!!markup.showNestedDevices}
+                  onChange={(e) =>
+                    onChange({ showNestedDevices: e.target.checked || undefined })
+                  }
+                  className="mt-0.5 accent-amber-knox"
+                />
+                <span>
+                  Show compact Nested Devices schedule tag
+                  <span className="block text-[10px] text-ink-500">
+                    Nested devices always draw as attached bubbles; this adds
+                    a small area schedule beside the container.
+                  </span>
+                </span>
+              </label>
+              {isRackDevice(markup) && (
+                <p className="text-[10px] text-ink-500 leading-snug">
+                  Nested rack-mount devices are linked to the Rack system when
+                  possible.
+                </p>
+              )}
+            </div>
+          )}
+
+          {children.length > 0 ? (
+            <div className="space-y-1">
+              <div className="text-[10px] text-ink-500">
+                {nestedScheduleTitle(markup)}
+              </div>
+              {children.slice(0, 6).map((child) => (
+                <div
+                  key={child.id}
+                  className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-0.5 text-[11px]"
+                >
+                  <span className="font-mono text-ink-300 truncate">
+                    {deviceDisplayName(child)}
+                  </span>
+                  <button
+                    onClick={() => updateMarkup(child.id, { parentId: undefined } as any)}
+                    className="text-[10px] text-ink-500 hover:text-ink-100"
+                  >
+                    Unnest
+                  </button>
+                  <span className="col-span-2 text-[10px] text-ink-500 truncate">
+                    {nestedConnectionSummary(connections, child.tag) || "No connections yet"}
+                  </span>
+                </div>
+              ))}
+              {children.length > 6 && (
+                <div className="text-[10px] text-ink-500">
+                  + {children.length - 6} more nested devices
+                </div>
+              )}
+            </div>
+          ) : canContain ? (
+            <p className="text-[10px] text-ink-500 leading-snug">
+              No devices are currently nested in this container.
+            </p>
+          ) : null}
+        </div>
+      )}
+
+      {isRouteInfra && markup.attachedRunEndpoint && (
+        <div className="rounded-md border border-white/5 bg-ink-900/35 px-2 py-2 space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-[10px] font-mono uppercase tracking-wider text-amber-knox">
+                Run Endpoint
+              </div>
+              <div className="text-[11px] text-ink-300 font-mono truncate">
+                {markup.attachedRunEndpoint.endpoint} ·{" "}
+                {markup.attachedRunEndpoint.cableMarkupId}
+              </div>
+            </div>
+            <button
+              onClick={() => disconnectRouteInfrastructure(markup.id)}
+              className="btn-ghost text-[11px] text-ink-300 hover:text-ink-50"
+              title="Disconnect from run endpoint"
+            >
+              Disconnect
+            </button>
+          </div>
+          <p className="text-[10px] text-ink-500 leading-snug">
+            Drag near another run endpoint to reattach. Lock either item to
+            prevent accidental movement.
+          </p>
+        </div>
+      )}
+
+      {isRouteInfra && (
+        <div className="rounded-md border border-white/5 bg-ink-900/35 px-2 py-2 space-y-1.5">
+          <div className="text-[10px] font-mono uppercase tracking-wider text-amber-knox">
+            Pull Box Routing
+          </div>
+          {routeSummaries.length > 0 ? (
+            <div className="space-y-1">
+              {routeSummaries.slice(0, 6).map(({ cable, role }) => (
+                <div
+                  key={cable.id}
+                  className="flex items-center justify-between gap-2 text-[11px]"
+                >
+                  <span className="font-mono text-ink-300 truncate">
+                    {cable.cableId === "conduit" ? conduitLabelFor(cable) : cable.cableId}
+                  </span>
+                  <span
+                    className={
+                      role === "Termination"
+                        ? "text-amber-knox"
+                        : "text-ink-400"
+                    }
+                  >
+                    {role}
+                  </span>
+                </div>
+              ))}
+              {routeSummaries.length > 6 && (
+                <div className="text-[10px] text-ink-500">
+                  + {routeSummaries.length - 6} more in reports
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="text-[10px] text-ink-500 leading-snug">
+              No cables currently pass through or terminate at this Pull Box.
+            </p>
+          )}
+        </div>
+      )}
 
       <Field label="Position (X, Y)">
         <div className="grid grid-cols-2 gap-1.5">
@@ -958,17 +1197,67 @@ const CONNECTOR_HINTS: Record<string, string[]> = {
   conduit: ["—"],
 };
 
-function CableProps({ markup, onChange }: any) {
+function CableProps({
+  markup,
+  onChange,
+}: {
+  markup: CableMarkup;
+  onChange: (p: Partial<CableMarkup>) => void;
+}) {
   const cab = cablesById[markup.cableId];
   const hints = CONNECTOR_HINTS[markup.cableId] ?? [];
   const datalistId = `connector-hints-${markup.cableId}`;
+  const isConduit = markup.cableId === "conduit";
+  const isFiber = isFiberCableId(markup.cableId);
+  const fiberStrandCount = fiberStrandCountFor(markup, markup.cableId);
+  const [fiberStrandInput, setFiberStrandInput] = useState(
+    String(fiberStrandCount ?? ""),
+  );
+  const runCount = runCountFor(markup);
+  const sheet = useProjectStore(selectActiveSheet);
+  const project = useProjectStore((s) => s.project);
+  const carried = sheet
+    ? conduitCarrySummaries(sheet).find((s) => s.conduit.id === markup.id)
+        ?.carriedCables ?? []
+    : [];
+  const fill = isConduit ? approximateConduitFill(markup, carried) : null;
+  const carriedBy = sheet ? carriedByConduits(sheet, markup) : [];
+  const length = sheet
+    ? cableLengthBreakdown(
+        markup,
+        sheet.calibration,
+        project?.bidDefaults?.slackPercent ?? 0,
+      )
+    : null;
+  useEffect(() => {
+    setFiberStrandInput(String(fiberStrandCount ?? ""));
+  }, [markup.id, fiberStrandCount]);
   return (
     <>
-      <Field label="Cable Type">
+      <Field label={isConduit ? "Run Type" : "Cable Type"}>
         <select
           className="input"
           value={markup.cableId}
-          onChange={(e) => onChange({ cableId: e.target.value })}
+          onChange={(e) => {
+            const cableId = e.target.value;
+            onChange(
+              cableId === "conduit"
+                ? {
+                    cableId,
+                    conduitType: markup.conduitType ?? DEFAULT_CONDUIT_TYPE,
+                    conduitSize: markup.conduitSize ?? DEFAULT_CONDUIT_SIZE,
+                    fiberStrandCount: undefined,
+                  }
+                : {
+                    cableId,
+                    conduitType: undefined,
+                    conduitSize: undefined,
+                    fiberStrandCount: isFiberCableId(cableId)
+                      ? fiberStrandCountFor(markup, cableId)
+                      : undefined,
+                  },
+            );
+          }}
         >
           {cables.map((c) => (
             <option key={c.id} value={c.id}>
@@ -977,6 +1266,132 @@ function CableProps({ markup, onChange }: any) {
           ))}
         </select>
       </Field>
+      {isConduit && (
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Conduit Type">
+            <input
+              className="input"
+              list="properties-conduit-types"
+              value={markup.conduitType ?? DEFAULT_CONDUIT_TYPE}
+              placeholder={DEFAULT_CONDUIT_TYPE}
+              onChange={(e) =>
+                onChange({ conduitType: e.target.value || undefined })
+              }
+            />
+            <datalist id="properties-conduit-types">
+              {CONDUIT_TYPES.map((type) => (
+                <option key={type} value={type} />
+              ))}
+            </datalist>
+          </Field>
+          <Field label="Conduit Size">
+            <input
+              className="input"
+              list="properties-conduit-sizes"
+              value={markup.conduitSize ?? DEFAULT_CONDUIT_SIZE}
+              placeholder={DEFAULT_CONDUIT_SIZE}
+              onChange={(e) =>
+                onChange({ conduitSize: e.target.value || undefined })
+              }
+            />
+            <datalist id="properties-conduit-sizes">
+              {CONDUIT_SIZES.map((size) => (
+                <option key={size} value={size} />
+              ))}
+            </datalist>
+          </Field>
+        </div>
+      )}
+      {isFiber && (
+        <Field label="Fiber Strand Count">
+          <input
+            className="input"
+            list="properties-fiber-strand-counts"
+            inputMode="numeric"
+            min={1}
+            value={fiberStrandInput}
+            placeholder="12"
+            onChange={(e) => {
+              const next = e.target.value;
+              setFiberStrandInput(next);
+              const parsed = parseInt(next, 10);
+              if (Number.isFinite(parsed) && parsed > 0) {
+                onChange({ fiberStrandCount: parsed });
+              }
+            }}
+            onBlur={() =>
+              setFiberStrandInput(
+                String(normalizeFiberStrandCount(fiberStrandCount)),
+              )
+            }
+          />
+          <datalist id="properties-fiber-strand-counts">
+            {(cab?.strandCountPresets ?? []).map((count) => (
+              <option key={count} value={count} />
+            ))}
+          </datalist>
+          <div className="text-[10px] text-ink-500 mt-0.5">
+            Presets are suggestions; any positive whole number is allowed.
+          </div>
+        </Field>
+      )}
+      <Field label={isConduit ? "Run Count" : "Cable Count"}>
+        <input
+          className="input"
+          inputMode="numeric"
+          value={runCount}
+          min={1}
+          onChange={(e) => {
+            const v = parseInt(e.target.value, 10);
+            onChange({ runCount: Number.isFinite(v) && v > 0 ? v : 1 });
+          }}
+        />
+        <div className="text-[10px] text-ink-500 mt-0.5">
+          Use one drawn path to represent parallel runs on the same route.
+        </div>
+      </Field>
+      <Field label="Physical Label" hint="field label">
+        <input
+          className="input"
+          value={markup.physicalLabel ?? ""}
+          placeholder="e.g. CBL-001 / FOC-12"
+          onChange={(e) =>
+            onChange({ physicalLabel: e.target.value || undefined })
+          }
+        />
+        <div className="text-[10px] text-ink-500 mt-0.5">
+          Real-world label to print or apply in the field; separate from the drawing tag.
+        </div>
+      </Field>
+      <div className="rounded-md border border-white/5 bg-ink-900/35 px-2 py-2 space-y-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <div className="text-[10px] font-mono uppercase tracking-wider text-amber-knox">
+              Run Label
+            </div>
+            <p className="text-[10px] text-ink-500 leading-snug">
+              Auto labels de-clutter dense pull-box drops; dragged labels stay visible.
+            </p>
+          </div>
+          <button
+            onClick={() =>
+              onChange({ showLabel: markup.showLabel === false ? undefined : false })
+            }
+            className={`text-[10px] font-mono px-2 py-1 rounded border transition-colors ${
+              markup.showLabel === false
+                ? "text-ink-300 border-white/10 hover:border-white/20"
+                : "bg-amber-knox/10 border-amber-knox/40 text-amber-knox"
+            }`}
+            title={
+              markup.showLabel === false
+                ? "Show this run label"
+                : "Hide this run label"
+            }
+          >
+            {markup.showLabel === false ? "Hidden" : "Visible"}
+          </button>
+        </div>
+      </div>
       <Field label="Connector / Termination">
         <input
           className="input"
@@ -1017,18 +1432,82 @@ function CableProps({ markup, onChange }: any) {
           />
         </Field>
       </div>
-      <Field label="Slack % (overrides project default)">
-        <input
-          className="input"
-          inputMode="decimal"
-          value={markup.slackPercent ?? ""}
-          placeholder="default"
-          onChange={(e) => {
-            const v = parseFloat(e.target.value);
-            onChange({ slackPercent: isFinite(v) ? v : undefined });
-          }}
-        />
-      </Field>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Service Loop (ft)">
+          <input
+            className="input"
+            inputMode="decimal"
+            value={markup.serviceLoopFt ?? ""}
+            placeholder={markup.routeStyle === "archedDrop" ? "10" : "0"}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              onChange({ serviceLoopFt: isFinite(v) ? v : undefined });
+            }}
+          />
+        </Field>
+        <Field label="Slack %">
+          <input
+            className="input"
+            inputMode="decimal"
+            value={markup.slackPercent ?? ""}
+            placeholder="project default"
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              onChange({ slackPercent: isFinite(v) ? v : undefined });
+            }}
+          />
+        </Field>
+      </div>
+      {length && (
+        <div className="rounded-md border border-white/5 bg-ink-900/35 px-2 py-2 text-[11px] text-ink-400 space-y-1">
+          <div className="flex justify-between">
+            <span>Measured</span>
+            <span className="font-mono">{formatFeetDecimal(length.totalRawFt, 1)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span>Service Loop</span>
+            <span className="font-mono">{formatFeetDecimal(length.totalServiceLoopFt, 1)}</span>
+          </div>
+          <div className="flex justify-between text-ink-200">
+            <span>Bid Length w/ Slack</span>
+            <span className="font-mono">{formatFeetDecimal(length.totalWithSlackFt, 1)}</span>
+          </div>
+        </div>
+      )}
+      {isConduit && (
+        <div className="rounded-md border border-white/5 bg-ink-900/35 px-2 py-2 space-y-1.5">
+          <div className="text-[10px] font-mono uppercase tracking-wider text-amber-knox">
+            Conduit Fill
+          </div>
+          {fill ? (
+            <>
+              <div className="flex justify-between text-[11px] text-ink-300">
+                <span>{fill.knownCableCount} known cable(s)</span>
+                <span className="font-mono">{fill.fillPercent.toFixed(1)}%</span>
+              </div>
+              <p className="text-[10px] text-ink-500 leading-snug">
+                Approximate planning fill based on catalog outside diameters,
+                not a stamped NEC calculation.
+              </p>
+              {carried.length > 0 && (
+                <div className="text-[10px] text-ink-400 leading-snug">
+                  Carries: {carried.map((c) => c.endpointB ?? c.id).join(", ")}
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="text-[10px] text-ink-500">Choose a standard conduit size to estimate fill.</p>
+          )}
+        </div>
+      )}
+      {!isConduit && carriedBy.length > 0 && (
+        <div className="rounded-md border border-white/5 bg-ink-900/35 px-2 py-2 text-[11px] text-ink-400">
+          Carried by conduit:{" "}
+          <span className="font-mono text-ink-200">
+            {carriedBy.map((c) => conduitLabelFor(c)).join(", ")}
+          </span>
+        </div>
+      )}
       {cab && (
         <div className="text-[11px] font-mono text-ink-400">
           ${cab.costPerFoot.toFixed(2)}/ft · {cab.laborPerFoot.toFixed(3)} hr/ft
@@ -1077,6 +1556,8 @@ function MultiMarkupEditor({
 }) {
   const devices = markups.filter((m) => m.kind === "device") as DeviceMarkup[];
   const allDevices = devices.length === markups.length && devices.length > 0;
+  const cableRuns = markups.filter((m) => m.kind === "cable") as CableMarkup[];
+  const allCableRuns = cableRuns.length === markups.length && cableRuns.length > 0;
   const layers = useProjectStore.getState().layers;
 
   // Compute "common" defaults for sliders
@@ -1089,6 +1570,8 @@ function MultiMarkupEditor({
       <div className="text-[11px] text-ink-400 pb-1">
         {allDevices
           ? `${markups.length} devices selected. Edits below apply to all.`
+          : allCableRuns
+            ? `${markups.length} cable/conduit/fiber runs selected. Edits below apply to all.`
           : `Mixed selection (${devices.length} devices, ${markups.length - devices.length} other). Common edits only.`}
       </div>
 
@@ -1125,6 +1608,21 @@ function MultiMarkupEditor({
             />
           </Field>
         </>
+      )}
+
+      {allCableRuns && (
+        <Field label="Physical Label (all)" hint="field label">
+          <input
+            className="input"
+            placeholder="e.g. CBL-001 / FOC-12"
+            onChange={(e) =>
+              onApply({ physicalLabel: e.target.value || undefined })
+            }
+          />
+          <div className="text-[10px] text-ink-500 mt-0.5">
+            Applies the same real-world label to every selected run.
+          </div>
+        </Field>
       )}
 
       <Field label="Layer (all)">
@@ -1871,7 +2369,10 @@ function SystemConfigSection({
   );
 }
 
-function describeKind(k: string) {
+function describeMarkup(markup: Markup) {
+  if (markup.kind === "cable" && markup.cableId === "conduit") {
+    return "Conduit Run";
+  }
   const map: Record<string, string> = {
     device: "Device",
     cable: "Cable Run",
@@ -1884,7 +2385,7 @@ function describeKind(k: string) {
     polygon: "Polygon",
     freehand: "Freehand",
   };
-  return map[k] ?? "Markup";
+  return map[markup.kind] ?? "Markup";
 }
 
 function deriveCommon<T extends number>(arr: T[]): T {

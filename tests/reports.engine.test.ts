@@ -132,10 +132,98 @@ describe("selectEntities", () => {
     expect((cam as Record<string, unknown>).connectionCount).toBe(1);
   });
 
+  it("surfaces nested device relationships", () => {
+    const p = mkProject();
+    p.sheets[0].markups.push({
+      id: "m4",
+      kind: "device",
+      deviceId: "net-headend",
+      category: "network",
+      x: 400,
+      y: 400,
+      tag: "HE-01",
+      layer: "network",
+    });
+    const ap = p.sheets[0].markups.find((m) => m.id === "m3") as any;
+    ap.parentId = "m4";
+
+    const rows = selectEntities(p, "devices");
+    const apRow = rows.find((r) => (r as Record<string, unknown>).tag === "AP-01");
+    const headEndRow = rows.find((r) => (r as Record<string, unknown>).tag === "HE-01");
+    expect((apRow as Record<string, unknown>).parentTag).toBe("HE-01");
+    expect((headEndRow as Record<string, unknown>).nestedDeviceCount).toBe(1);
+    expect((headEndRow as Record<string, unknown>).nestedDevices).toBe("AP-01");
+  });
+
+  it("builds area schedule rows with nested connections", () => {
+    const p = mkProject();
+    p.sheets[0].markups.push({
+      id: "m4",
+      kind: "device",
+      deviceId: "net-headend",
+      category: "network",
+      x: 400,
+      y: 400,
+      tag: "HE-01",
+      layer: "network",
+      nestedScheduleName: "MDF-1 Schedule",
+      showNestedDevices: true,
+    });
+    const ap = p.sheets[0].markups.find((m) => m.id === "m3") as any;
+    ap.parentId = "m4";
+    p.connections?.push({
+      id: "c2",
+      fromTag: "AP-01",
+      fromPort: "ETH 0",
+      toTag: "SW-01",
+      toPort: "Port 7",
+    });
+
+    const rows = selectEntities(p, "areaSchedules");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      areaTag: "HE-01",
+      areaName: "MDF-1 Schedule",
+      deviceTag: "AP-01",
+      connections: "SW-01 (ETH 0)",
+    });
+  });
+
   it("flattens connections", () => {
     const p = mkProject();
     const rows = selectEntities(p, "connections");
     expect(rows).toHaveLength(1);
+  });
+
+  it("surfaces physical cable labels in cable report rows", () => {
+    const p = mkProject();
+    p.sheets[0].calibration = {
+      p1: { x: 0, y: 0 },
+      p2: { x: 10, y: 0 },
+      realFeet: 1,
+      pixelsPerFoot: 10,
+    };
+    p.sheets[0].markups.push({
+      id: "run-1",
+      kind: "cable",
+      layer: "cable",
+      cableId: "cat6",
+      label: "R1",
+      physicalLabel: "CBL-CAM-001",
+      endpointA: "SW-01",
+      endpointB: "CAM-01",
+      runCount: 1,
+      points: [0, 0, 100, 0],
+    });
+
+    const rows = selectEntities(p, "cables");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      physicalLabel: "CBL-CAM-001",
+      endpointA: "SW-01",
+      endpointB: "CAM-01",
+      lengthFt: 10,
+    });
   });
 
   it("flattens ports across devices", () => {
@@ -312,5 +400,17 @@ describe("resolveColumns", () => {
     });
     expect(cols[0].header).toBe("Tag");
     expect(cols[1].header).toBe("VLAN");
+  });
+
+  it("labels cable physical labels from the field catalog", () => {
+    const cols = resolveColumns({
+      id: "r",
+      name: "x",
+      scope: "cables",
+      filters: [],
+      columns: [{ field: "physicalLabel" }],
+      formats: [],
+    });
+    expect(cols[0].header).toBe("Physical Label");
   });
 });

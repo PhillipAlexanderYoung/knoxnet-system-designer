@@ -34,6 +34,16 @@ import type {
 } from "../store/projectStore";
 import { devicesById, effectiveDevicePorts } from "../data/devices";
 import { cablesById } from "../data/cables";
+import { cableDisplayLabel } from "../lib/conduit";
+import { cableLengthBreakdown, carriedByConduits, runCountFor } from "../lib/cableRuns";
+import { fiberStrandCountFor } from "../lib/fiber";
+import {
+  deviceDisplayName,
+  isContainerDevice,
+  nestedChildren,
+  nestedConnectionSummary,
+  nestedScheduleTitle,
+} from "../lib/nesting";
 import { rackDevicesById } from "../data/rackDevices";
 import { fieldLabel } from "./fieldCatalog";
 import { coerceCell, getByPath } from "./paths";
@@ -85,6 +95,13 @@ function selectDevices(project: Project): Row[] {
       if (m.kind !== "device") continue;
       const dev = m as DeviceMarkup;
       const catalog = devicesById[dev.deviceId];
+      const parent = dev.parentId
+        ? sheet.markups.find(
+            (candidate): candidate is DeviceMarkup =>
+              candidate.kind === "device" && candidate.id === dev.parentId,
+          )
+        : null;
+      const children = nestedChildren(sheet.markups, dev.id);
       rows.push({
         ...dev,
         deviceLabel: catalog?.label ?? dev.deviceId,
@@ -92,6 +109,10 @@ function selectDevices(project: Project): Row[] {
         sheetName: sheet.name,
         sheetId: sheet.id,
         connectionCount: deviceCountForTag(project, dev.tag),
+        parentTag: parent?.tag ?? "",
+        parentLabel: parent ? deviceDisplayName(parent) : "",
+        nestedDeviceCount: children.length,
+        nestedDevices: children.map(deviceDisplayName).join(", "),
       });
     }
   }
@@ -117,13 +138,24 @@ function selectCables(project: Project): Row[] {
       }
       const ft = pxPerFt > 0 ? pxLen / pxPerFt : 0;
       const slack = cab.slackPercent ?? project.bidDefaults?.slackPercent ?? 0;
+      const runCount = runCountFor(cab);
+      const fiberStrandCount = fiberStrandCountFor(cab, cab.cableId);
+      const length = cableLengthBreakdown(cab, sheet.calibration, slack);
+      const carriedBy = carriedByConduits(sheet, cab);
       rows.push({
         ...cab,
-        cableLabel: cat?.label ?? cab.cableId,
+        physicalLabel: cab.physicalLabel ?? "",
+        runCount,
+        fiberStrandCount,
+        cableLabel: cat ? cableDisplayLabel(cab.cableId, cat.label, cab) : cab.cableId,
         sheetName: sheet.name,
         sheetId: sheet.id,
-        lengthFt: +ft.toFixed(2),
-        lengthFtWithSlack: +(ft * (1 + slack / 100)).toFixed(2),
+        serviceLoopFt: length ? +length.totalServiceLoopFt.toFixed(2) : 0,
+        lengthFt: length ? +length.totalRawFt.toFixed(2) : +(ft * runCount).toFixed(2),
+        lengthFtWithSlack: length
+          ? +length.totalWithSlackFt.toFixed(2)
+          : +(ft * (1 + slack / 100) * runCount).toFixed(2),
+        carriedByConduit: carriedBy.map((c) => c.endpointA || c.endpointB || c.id).join(", "),
       });
     }
   }
@@ -134,6 +166,35 @@ function selectConnections(project: Project): Row[] {
   const rows: Row[] = [];
   for (const c of project.connections ?? []) {
     rows.push({ ...c });
+  }
+  return rows;
+}
+
+function selectAreaSchedules(project: Project): Row[] {
+  const rows: Row[] = [];
+  const connections = project.connections ?? [];
+  for (const sheet of project.sheets) {
+    for (const m of sheet.markups) {
+      if (m.kind !== "device" || !isContainerDevice(m)) continue;
+      const children = nestedChildren(sheet.markups, m.id);
+      for (const child of children) {
+        const catalog = devicesById[child.deviceId];
+        rows.push({
+          areaId: m.id,
+          areaTag: m.tag,
+          areaName: nestedScheduleTitle(m),
+          areaLabel: deviceDisplayName(m),
+          sheetName: sheet.name,
+          sheetId: sheet.id,
+          deviceTag: child.tag,
+          deviceLabel: catalog?.label ?? child.deviceId,
+          deviceName: deviceDisplayName(child),
+          category: child.category,
+          connectionCount: deviceCountForTag(project, child.tag),
+          connections: nestedConnectionSummary(connections, child.tag),
+        });
+      }
+    }
   }
   return rows;
 }
@@ -228,6 +289,8 @@ export function selectEntities(project: Project, scope: ReportScope): Row[] {
       return selectCables(project);
     case "connections":
       return selectConnections(project);
+    case "areaSchedules":
+      return selectAreaSchedules(project);
     case "racks":
       return selectRacks(project);
     case "rackPlacements":

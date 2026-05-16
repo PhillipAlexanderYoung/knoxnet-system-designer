@@ -14,6 +14,8 @@ interface Props {
   onMouseDown?: (e: any) => void;
   onClick?: (e: any) => void;
   draggable?: boolean;
+  onDragStart?: (e: any) => void;
+  onDragMove?: (e: any) => void;
   onDragEnd?: (e: any) => void;
 }
 
@@ -33,6 +35,8 @@ export function DeviceIconNode({
   onMouseDown,
   onClick,
   draggable,
+  onDragStart,
+  onDragMove,
   onDragEnd,
 }: Props) {
   const color = colorOverride ?? categoryColor[device.category] ?? "#94A0B8";
@@ -48,6 +52,8 @@ export function DeviceIconNode({
       onClick={onClick}
       onTap={onClick}
       draggable={draggable}
+      onDragStart={onDragStart}
+      onDragMove={onDragMove}
       onDragEnd={onDragEnd}
     >
       {/* Selection halo */}

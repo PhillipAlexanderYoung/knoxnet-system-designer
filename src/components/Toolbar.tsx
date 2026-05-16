@@ -20,10 +20,14 @@ import {
   Radar,
   Tags,
   RotateCcw,
+  Undo2,
+  Redo2,
 } from "lucide-react";
 import { useProjectStore, type ToolId } from "../store/projectStore";
 import { cables, cablesById } from "../data/cables";
 import { selectActiveSheet } from "../store/projectStore";
+import { CONDUIT_SIZES, CONDUIT_TYPES } from "../lib/conduit";
+import { isFiberCableId, normalizeFiberStrandCount } from "../lib/fiber";
 
 // Quick-access freehand swatches. Hand-picked to cover the common review
 // colors (red strikethrough, amber highlight, green/blue review marks)
@@ -71,6 +75,12 @@ export function Toolbar() {
   const paletteOpen = useProjectStore((s) => s.paletteOpen);
   const activeCableId = useProjectStore((s) => s.activeCableId);
   const setActiveCable = useProjectStore((s) => s.setActiveCable);
+  const activeConduitType = useProjectStore((s) => s.activeConduitType);
+  const activeConduitSize = useProjectStore((s) => s.activeConduitSize);
+  const activeFiberStrandCount = useProjectStore((s) => s.activeFiberStrandCount);
+  const setActiveConduitType = useProjectStore((s) => s.setActiveConduitType);
+  const setActiveConduitSize = useProjectStore((s) => s.setActiveConduitSize);
+  const setActiveFiberStrandCount = useProjectStore((s) => s.setActiveFiberStrandCount);
   const freehandColor = useProjectStore((s) => s.freehandColor);
   const setFreehandColor = useProjectStore((s) => s.setFreehandColor);
   const freehandThickness = useProjectStore((s) => s.freehandThickness);
@@ -81,9 +91,41 @@ export function Toolbar() {
   const toggleBrandPreview = useProjectStore((s) => s.toggleBrandPreview);
   const coverageVisible = useProjectStore((s) => s.coverageVisible);
   const toggleCoverageVisible = useProjectStore((s) => s.toggleCoverageVisible);
+  const runLabelsVisible = useProjectStore((s) => s.runLabelsVisible);
+  const toggleRunLabelsVisible = useProjectStore((s) => s.toggleRunLabelsVisible);
+  const canUndo = useProjectStore((s) => s.history.past.length > 0);
+  const canRedo = useProjectStore((s) => s.history.future.length > 0);
+  const undo = useProjectStore((s) => s.undo);
+  const redo = useProjectStore((s) => s.redo);
+  const [fiberStrandInput, setFiberStrandInput] = useState(
+    String(activeFiberStrandCount),
+  );
+  const activeFiberStrandPresets =
+    activeCableId ? cablesById[activeCableId]?.strandCountPresets ?? [] : [];
+
+  useEffect(() => {
+    setFiberStrandInput(String(activeFiberStrandCount));
+  }, [activeCableId, activeFiberStrandCount]);
 
   return (
     <div className="absolute left-1/2 top-4 -translate-x-1/2 z-20 flex items-center gap-1 panel rounded-xl px-1.5 py-1.5 animate-slide-up">
+      <button
+        onClick={undo}
+        disabled={!canUndo}
+        className="tool-btn disabled:opacity-35 disabled:cursor-not-allowed"
+        title="Undo (Ctrl/⌘+Z)"
+      >
+        <Undo2 className="w-4 h-4" />
+      </button>
+      <button
+        onClick={redo}
+        disabled={!canRedo}
+        className="tool-btn disabled:opacity-35 disabled:cursor-not-allowed"
+        title="Redo (Ctrl/⌘+Shift+Z or Ctrl/⌘+Y)"
+      >
+        <Redo2 className="w-4 h-4" />
+      </button>
+      <div className="w-px h-6 bg-white/10 mx-1" />
       {TOOLS.map((t) => {
         const Icon = t.icon;
         const isActive = activeTool === t.id;
@@ -154,6 +196,25 @@ export function Toolbar() {
           Coverage · FOV / signal / beams
         </span>
       </button>
+      <button
+        onClick={toggleRunLabelsVisible}
+        data-active={runLabelsVisible}
+        className="tool-btn group"
+        title={
+          runLabelsVisible
+            ? "Run labels ON — smart de-clutter hides dense clusters"
+            : "Run labels OFF — cable/conduit labels hidden in editor and export"
+        }
+      >
+        {runLabelsVisible ? (
+          <Tags className="w-4 h-4" />
+        ) : (
+          <EyeOff className="w-4 h-4" />
+        )}
+        <span className="absolute -bottom-7 left-1/2 -translate-x-1/2 text-[10px] font-mono uppercase tracking-wider text-ink-300 opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap bg-ink-900 px-1.5 py-0.5 rounded">
+          Run labels
+        </span>
+      </button>
       <TagDefaultsButton />
 
       {activeTool === "cable" && (
@@ -175,6 +236,69 @@ export function Toolbar() {
               className="w-3 h-3 rounded-sm"
               style={{ background: cablesById[activeCableId]?.color }}
             />
+          )}
+          <span className="hidden xl:inline text-[10px] text-ink-400 font-mono whitespace-nowrap">
+            Shift-click devices to branch, or select a Pull Box + cameras and press Route.
+          </span>
+          {activeCableId === "conduit" && (
+            <>
+              <input
+                value={activeConduitType}
+                onChange={(e) => setActiveConduitType(e.target.value)}
+                className="bg-ink-700/60 border border-white/5 rounded-md px-2 py-1 text-xs text-ink-50"
+                list="toolbar-conduit-types"
+                title="Default conduit type for new runs"
+                placeholder="EMT"
+              />
+              <datalist id="toolbar-conduit-types">
+                {CONDUIT_TYPES.map((type) => (
+                  <option key={type} value={type} />
+                ))}
+              </datalist>
+              <input
+                className="bg-ink-700/60 border border-white/5 rounded-md px-2 py-1 text-xs text-ink-50 w-20"
+                list="toolbar-conduit-sizes"
+                value={activeConduitSize}
+                onChange={(e) => setActiveConduitSize(e.target.value)}
+                title="Default conduit size for new runs"
+                placeholder='1"'
+              />
+              <datalist id="toolbar-conduit-sizes">
+                {CONDUIT_SIZES.map((size) => (
+                  <option key={size} value={size} />
+                ))}
+              </datalist>
+            </>
+          )}
+          {isFiberCableId(activeCableId) && (
+            <>
+              <input
+                className="bg-ink-700/60 border border-white/5 rounded-md px-2 py-1 text-xs text-ink-50 w-20"
+                list="toolbar-fiber-strand-counts"
+                inputMode="numeric"
+                value={fiberStrandInput}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setFiberStrandInput(next);
+                  const parsed = parseInt(next, 10);
+                  if (Number.isFinite(parsed) && parsed > 0) {
+                    setActiveFiberStrandCount(parsed);
+                  }
+                }}
+                onBlur={() =>
+                  setFiberStrandInput(
+                    String(normalizeFiberStrandCount(activeFiberStrandCount)),
+                  )
+                }
+                title="Default strand count for new fiber runs"
+                placeholder="12"
+              />
+              <datalist id="toolbar-fiber-strand-counts">
+                {activeFiberStrandPresets.map((count) => (
+                  <option key={count} value={count} />
+                ))}
+              </datalist>
+            </>
           )}
         </>
       )}

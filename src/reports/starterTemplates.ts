@@ -70,9 +70,14 @@ export function buildStarterTemplates(): ReportTemplate[] {
       filters: [],
       columns: [
         { field: "label", header: "Tag" },
+        { field: "physicalLabel", header: "Physical Label" },
         { field: "cableLabel", header: "Cable" },
+        { field: "conduitSize", header: "Conduit Size" },
+        { field: "conduitType", header: "Conduit Type" },
         { field: "endpointA", header: "From" },
         { field: "endpointB", header: "To" },
+        { field: "runCount", header: "Run Count" },
+        { field: "fiberStrandCount", header: "Fiber Strands" },
         { field: "lengthFt", header: "Length (ft)" },
         { field: "lengthFtWithSlack", header: "Length w/ Slack" },
         { field: "connector" },
@@ -99,6 +104,25 @@ export function buildStarterTemplates(): ReportTemplate[] {
       groupBy: ["toTag"],
       sortBy: [{ field: "toPort", dir: "asc" }],
       formats: ["xlsx", "pdf"],
+    }),
+    t({
+      name: "Head End / Area Schedule",
+      description:
+        "Nested devices grouped by Head End, MDF, IDF, rack, enclosure, data rack, or IT closet, including connection summaries.",
+      scope: "areaSchedules",
+      filters: [],
+      columns: [
+        { field: "areaTag", header: "Area" },
+        { field: "areaName", header: "Schedule" },
+        { field: "deviceTag", header: "Device" },
+        { field: "deviceName", header: "Device Name" },
+        { field: "deviceLabel", header: "Type" },
+        { field: "connections" },
+        { field: "sheetName", header: "Sheet" },
+      ],
+      groupBy: ["areaName"],
+      sortBy: [{ field: "deviceTag", dir: "asc" }],
+      formats: ["xlsx", "csv", "pdf"],
     }),
 
     t({
@@ -148,6 +172,8 @@ export function buildStarterTemplates(): ReportTemplate[] {
       columns: [
         { field: "tag" },
         { field: "deviceLabel" },
+        { field: "parentTag", header: "Contained In" },
+        { field: "nestedDevices", header: "Nested Devices" },
         { field: "systemConfig.model" },
         { field: "systemConfig.serialNumber" },
         { field: "systemConfig.firmwareVersion" },

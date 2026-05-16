@@ -6,11 +6,19 @@ export interface CableType {
   shortCode: string;
   costPerFoot: number;
   laborPerFoot: number; // hours
+  /** Approximate outside diameter for planning-level conduit fill. */
+  outsideDiameterIn?: number;
+  /** Default fiber strand count for fiber cable families. */
+  defaultStrandCount?: number;
+  /** Common strand counts offered as quick-pick suggestions. */
+  strandCountPresets?: number[];
   color: string;
   dash?: number[]; // konva dash pattern
   thickness?: number;
   notes?: string;
 }
+
+export const fiberStrandCountPresets = [2, 4, 6, 12, 24, 48, 72, 96, 144, 288];
 
 export const cables: CableType[] = [
   {
@@ -19,6 +27,7 @@ export const cables: CableType[] = [
     shortCode: "C6",
     costPerFoot: 0.42,
     laborPerFoot: 0.018,
+    outsideDiameterIn: 0.24,
     color: "#4FB7FF",
     thickness: 2.5,
   },
@@ -28,6 +37,7 @@ export const cables: CableType[] = [
     shortCode: "C6A",
     costPerFoot: 0.78,
     laborPerFoot: 0.022,
+    outsideDiameterIn: 0.29,
     color: "#2BD37C",
     thickness: 2.5,
   },
@@ -37,6 +47,7 @@ export const cables: CableType[] = [
     shortCode: "C6P",
     costPerFoot: 0.95,
     laborPerFoot: 0.02,
+    outsideDiameterIn: 0.24,
     color: "#B58CFF",
     thickness: 2.5,
   },
@@ -46,6 +57,9 @@ export const cables: CableType[] = [
     shortCode: "SMF",
     costPerFoot: 1.85,
     laborPerFoot: 0.045,
+    outsideDiameterIn: 0.35,
+    defaultStrandCount: 12,
+    strandCountPresets: fiberStrandCountPresets,
     color: "#F4B740",
     thickness: 3,
   },
@@ -55,6 +69,9 @@ export const cables: CableType[] = [
     shortCode: "MMF",
     costPerFoot: 2.25,
     laborPerFoot: 0.045,
+    outsideDiameterIn: 0.35,
+    defaultStrandCount: 12,
+    strandCountPresets: fiberStrandCountPresets,
     color: "#F7C765",
     thickness: 3,
     dash: [10, 4],
@@ -65,6 +82,7 @@ export const cables: CableType[] = [
     shortCode: "RG6",
     costPerFoot: 0.32,
     laborPerFoot: 0.018,
+    outsideDiameterIn: 0.27,
     color: "#FF5C7A",
     thickness: 2,
   },
@@ -74,6 +92,7 @@ export const cables: CableType[] = [
     shortCode: "18/2",
     costPerFoot: 0.18,
     laborPerFoot: 0.012,
+    outsideDiameterIn: 0.18,
     color: "#3DD4D0",
     thickness: 1.5,
     dash: [4, 4],
@@ -84,13 +103,14 @@ export const cables: CableType[] = [
     shortCode: "22/4",
     costPerFoot: 0.22,
     laborPerFoot: 0.014,
+    outsideDiameterIn: 0.16,
     color: "#94A0B8",
     thickness: 1.5,
     dash: [4, 4],
   },
   {
     id: "conduit",
-    label: "EMT Conduit (1\")",
+    label: "Conduit",
     shortCode: "EMT",
     costPerFoot: 1.85,
     laborPerFoot: 0.075,

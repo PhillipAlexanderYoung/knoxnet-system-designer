@@ -3,6 +3,12 @@ import { Group, Line, Circle, Rect, Text, Path } from "react-konva";
 import { useProjectStore, type Sheet } from "../store/projectStore";
 import { devicesById } from "../data/devices";
 import { cablesById } from "../data/cables";
+import { conduitLabelFor } from "../lib/conduit";
+import { fiberCompactLabel, isFiberCableId } from "../lib/fiber";
+import {
+  nearestCableRunEndpoint,
+  ROUTE_INFRA_DEVICE_IDS,
+} from "../lib/cableRuns";
 import { DeviceIconNode } from "../components/DeviceIconNode";
 import {
   cloudPath,
@@ -44,16 +50,26 @@ export function useToolGesture(
   const ortho = useProjectStore((s) => s.orthoEnabled);
   const activeDeviceId = useProjectStore((s) => s.activeDeviceId);
   const activeCableId = useProjectStore((s) => s.activeCableId);
+  const activeConduitType = useProjectStore((s) => s.activeConduitType);
+  const activeConduitSize = useProjectStore((s) => s.activeConduitSize);
+  const activeFiberStrandCount = useProjectStore((s) => s.activeFiberStrandCount);
+  const cableRunDraft = useProjectStore((s) => s.cableRunDraft);
   const freehandColor = useProjectStore((s) => s.freehandColor);
   const freehandThickness = useProjectStore((s) => s.freehandThickness);
   const freehandErasing = useProjectStore((s) => s.freehandErasing);
   const addMarkup = useProjectStore((s) => s.addMarkup);
+  const attachRouteInfrastructureToRun = useProjectStore(
+    (s) => s.attachRouteInfrastructureToRun,
+  );
   const addMaskRegion = useProjectStore((s) => s.addMaskRegion);
   const setSelected = useProjectStore((s) => s.setSelected);
   const setSelectedBrand = useProjectStore((s) => s.setSelectedBrand);
   const setCursor = useProjectStore((s) => s.setCursor);
   const nextTag = useProjectStore((s) => s.nextTag);
   const pushToast = useProjectStore((s) => s.pushToast);
+  const placeCableRunEndpoint = useProjectStore((s) => s.placeCableRunEndpoint);
+  const clearCableRunDraft = useProjectStore((s) => s.clearCableRunDraft);
+  const finishCableRunDraft = useProjectStore((s) => s.finishCableRunDraft);
 
   const withinSheet = (p: { x: number; y: number } | null) =>
     !!p && p.x >= 0 && p.y >= 0 && p.x <= sheet.pageWidth && p.y <= sheet.pageHeight;
@@ -122,6 +138,11 @@ export function useToolGesture(
         kind: "cable",
         layer: "cable",
         cableId: activeCableId,
+        ...(activeCableId === "conduit"
+          ? { conduitType: activeConduitType, conduitSize: activeConduitSize }
+          : isFiberCableId(activeCableId)
+            ? { fiberStrandCount: activeFiberStrandCount }
+          : {}),
         points: flat,
       });
       setPoints([]);
@@ -148,17 +169,30 @@ export function useToolGesture(
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
-      if (e.key === "Enter") commitInProgress();
+      if (e.key === "Enter") {
+        if (tool === "cable") finishCableRunDraft();
+        else commitInProgress();
+      }
       if (e.key === "Escape") {
         setPoints([]);
         setDrag(null);
         setPen(null);
+        clearCableRunDraft();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [points, tool, activeCableId]);
+  }, [
+    points,
+    tool,
+    activeCableId,
+    activeConduitType,
+    activeConduitSize,
+    activeFiberStrandCount,
+    clearCableRunDraft,
+    finishCableRunDraft,
+  ]);
 
   const onMouseDown = (e: any) => {
     // Skip if a markup child handled the click (it sets cancelBubble)
@@ -180,16 +214,29 @@ export function useToolGesture(
     if (tool === "device" && activeDeviceId) {
       const dev = devicesById[activeDeviceId];
       if (!dev) return;
+      const snap = ROUTE_INFRA_DEVICE_IDS.has(activeDeviceId)
+        ? nearestCableRunEndpoint(sheet.markups, c)
+        : null;
+      const id = uid();
       addMarkup({
-        id: uid(),
+        id,
         kind: "device",
         layer: dev.category,
         category: dev.category,
         deviceId: dev.id,
-        x: c.x,
-        y: c.y,
+        x: snap?.x ?? c.x,
+        y: snap?.y ?? c.y,
         tag: nextTag(dev.shortCode),
+        ...(snap
+          ? {
+              attachedRunEndpoint: {
+                cableMarkupId: snap.cable.id,
+                endpoint: snap.endpoint,
+              },
+            }
+          : {}),
       });
+      if (snap) attachRouteInfrastructureToRun(id, snap.cable.id, snap.endpoint);
       return;
     }
     if (tool === "calibrate") {
@@ -203,12 +250,14 @@ export function useToolGesture(
       return;
     }
     if (tool === "cable") {
+      if (e.evt?.detail > 1) return;
       let pt = c;
-      if (ortho && points.length > 0) {
-        const last = points[points.length - 1];
+      const draftPoints = cableRunDraft?.points;
+      const last = draftPoints?.[draftPoints.length - 1];
+      if (ortho && last) {
         pt = orthoSnap(last, c);
       }
-      setPoints([...points, pt]);
+      placeCableRunEndpoint(pt);
       return;
     }
     if (tool === "polygon") {
@@ -258,7 +307,6 @@ export function useToolGesture(
   const onMouseMove = (e: any) => {
     const c = pointerInSheet(e);
     if (!c) return;
-    setCursor(c);
     if (drag?.isDragging) setDrag({ ...drag, end: c });
     if (pen?.active) setPen({ ...pen, pts: [...pen.pts, c.x, c.y] });
   };
@@ -379,22 +427,36 @@ export function useToolGesture(
   };
 
   const onDblClick = () => {
-    if ((tool === "cable" || tool === "polygon") && points.length >= 2) {
+    if (tool === "polygon" && points.length >= 2) {
       commitInProgress();
+    }
+    if (tool === "cable" && (cableRunDraft?.points.length ?? 0) >= 2) {
+      finishCableRunDraft();
     }
   };
 
   // ───── Preview render ─────
 
   const previewCable = (() => {
-    if (tool !== "cable" || points.length === 0 || !cursor || !activeCableId) return null;
+    const route = cableRunDraft?.points ?? [];
+    if (tool !== "cable" || route.length === 0 || !cursor || !activeCableId) return null;
     const cab = cablesById[activeCableId];
     if (!cab) return null;
+    const last = route[route.length - 1];
     let liveEnd = cursor;
-    if (ortho) liveEnd = orthoSnap(points[points.length - 1], cursor);
-    const flat = points.flatMap((p) => [p.x, p.y]).concat([liveEnd.x, liveEnd.y]);
+    if (ortho) liveEnd = orthoSnap(last, cursor);
+    const flat = [...route.flatMap((p) => [p.x, p.y]), liveEnd.x, liveEnd.y];
     const lenPts = polylineLengthPts(flat);
     const ft = ptsToFeet(lenPts, sheet.calibration);
+    const labelPrefix =
+      activeCableId === "conduit"
+        ? conduitLabelFor({
+            conduitType: activeConduitType,
+            conduitSize: activeConduitSize,
+          })
+        : fiberCompactLabel(activeCableId, cab.shortCode, {
+            fiberStrandCount: activeFiberStrandCount,
+          });
     return (
       <Group listening={false}>
         <Line
@@ -406,16 +468,38 @@ export function useToolGesture(
           lineCap="round"
           lineJoin="round"
         />
-        {points.map((p, i) => (
-          <Circle key={i} x={p.x} y={p.y} radius={3} fill={cab.color} />
+        {route.map((p, i) => (
+          <Circle
+            key={i}
+            x={p.x}
+            y={p.y}
+            radius={i === 0 ? 4 : 3}
+            fill={i === 0 || i < route.length - 1 ? cab.color : undefined}
+            stroke={cab.color}
+            strokeWidth={1.5}
+          />
         ))}
+        <Circle x={liveEnd.x} y={liveEnd.y} radius={3} stroke={cab.color} strokeWidth={1.5} />
+        {route[0].label && (
+          <Group x={route[0].x + 8} y={route[0].y + 8}>
+            <Rect width={Math.max(42, (route[0].label.length + 4) * 6 + 12)} height={18} fill="#0B1220" stroke={cab.color} cornerRadius={3} />
+            <Text
+              x={6}
+              y={4}
+              text={`A · ${route[0].label}`}
+              fontFamily="JetBrains Mono"
+              fontSize={9}
+              fill="#F5F7FA"
+            />
+          </Group>
+        )}
         {ft !== null && (
           <Group x={liveEnd.x + 8} y={liveEnd.y - 18}>
             <Rect width={90} height={20} fill="#0B1220" stroke={cab.color} cornerRadius={3} />
             <Text
               x={6}
               y={5}
-              text={`${cab.shortCode}  ${formatFeet(ft, 0)}`}
+              text={`${labelPrefix}  ${formatFeet(ft, 0)}`}
               fontFamily="JetBrains Mono"
               fontSize={11}
               fill="#F5F7FA"

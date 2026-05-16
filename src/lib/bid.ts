@@ -8,7 +8,10 @@ import type {
 import { devicesById } from "../data/devices";
 import { cablesById } from "../data/cables";
 import { rackDevicesById } from "../data/rackDevices";
-import { applySlack, polylineLengthPts, ptsToFeet } from "./geometry";
+import { polylineLengthPts, ptsToFeet } from "./geometry";
+import { cableDisplayLabel, conduitLabelFor } from "./conduit";
+import { cableLengthBreakdown } from "./cableRuns";
+import { fiberCompactLabel, fiberStrandCountFor } from "./fiber";
 import {
   resolveDeviceCost,
   resolveDeviceLabor,
@@ -35,6 +38,7 @@ export interface CableLine {
   cableId: string;
   label: string;
   shortCode: string;
+  fiberStrandCount?: number;
   totalFeet: number; // post-slack
   rawFeet: number; // pre-slack
   costPerFoot: number;
@@ -218,14 +222,25 @@ function tally(
       );
       return;
     }
-    const slack = m.slackPercent ?? defaultSlack;
-    const adjusted = applySlack(ft, slack);
+    const length = cableLengthBreakdown(m, sheet.calibration, defaultSlack);
+    if (!length) return;
+    const rawFt = length.totalRawFt;
+    const adjusted = length.totalWithSlackFt;
     const cpf = resolveCableCost(cab, overrides);
     const lpf = resolveCableLabor(cab, overrides);
-    const existing = cableMap.get(m.cableId) ?? {
+    const strandCount = fiberStrandCountFor(m, m.cableId);
+    const cableKey =
+      m.cableId === "conduit"
+        ? `conduit:${conduitLabelFor(m)}`
+        : strandCount
+          ? `${m.cableId}:${strandCount}`
+          : m.cableId;
+    const label = cableDisplayLabel(m.cableId, cab.label, m);
+    const existing = cableMap.get(cableKey) ?? {
       cableId: m.cableId,
-      label: cab.label,
-      shortCode: cab.shortCode,
+      label,
+      shortCode: m.cableId === "conduit" ? label : fiberCompactLabel(m.cableId, cab.shortCode, m),
+      fiberStrandCount: strandCount,
       totalFeet: 0,
       rawFeet: 0,
       costPerFoot: cpf,
@@ -235,17 +250,17 @@ function tally(
       perSheetFeet: [],
     };
     existing.totalFeet += adjusted;
-    existing.rawFeet += ft;
+    existing.rawFeet += rawFt;
     existing.extCost += adjusted * cpf;
     existing.extLabor += adjusted * lpf;
     const sheetEntry = existing.perSheetFeet.find((p) => p.sheetName === sheetLabel(sheet));
     if (sheetEntry) {
       sheetEntry.ft += adjusted;
-      sheetEntry.rawFt += ft;
+      sheetEntry.rawFt += rawFt;
     } else {
-      existing.perSheetFeet.push({ sheetName: sheetLabel(sheet), ft: adjusted, rawFt: ft });
+      existing.perSheetFeet.push({ sheetName: sheetLabel(sheet), ft: adjusted, rawFt });
     }
-    cableMap.set(m.cableId, existing);
+    cableMap.set(cableKey, existing);
   }
 }
 

@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { loadStickyBranding, resolveBranding } from "../lib/branding";
 import { ForkProjectDialog } from "./ForkProjectDialog";
+import { APP_VERSION_LABEL } from "../lib/appVersion";
 
 export function StartScreen() {
   const newProject = useProjectStore((s) => s.newProject);
@@ -211,7 +212,7 @@ export function StartScreen() {
           <Wordmark size="lg" />
           <div className="text-right">
             <div className="label">Universal Markup &amp; Bid Tool</div>
-            <div className="font-mono text-xs text-ink-300 mt-1">v0.1 · local</div>
+            <div className="font-mono text-xs text-ink-300 mt-1">{APP_VERSION_LABEL} · local</div>
           </div>
         </header>
 

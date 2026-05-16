@@ -5,6 +5,8 @@ import type {
   Markup,
   ExportVisibility,
   DeviceMarkup,
+  Layer,
+  DeviceConnection,
 } from "../store/projectStore";
 import { devicesById } from "../data/devices";
 import { cablesById } from "../data/cables";
@@ -36,6 +38,23 @@ import {
   type BrandingConfig,
 } from "../lib/branding";
 import { resolveCoverage, rangeFtToPts } from "../lib/coverage";
+import { compactConduitLabel } from "../lib/conduit";
+import { fiberCompactLabel } from "../lib/fiber";
+import {
+  isContainerDevice,
+  nestedBubbleLabel,
+  nestedBubbleLabelColor,
+  nestedBubblePoint,
+  nestedBubbleSize,
+  nestedScheduleLines,
+  nestedScheduleTitle,
+} from "../lib/nesting";
+import {
+  runCountFor,
+  runLabelLayoutsFor,
+  type RunLabelLayout,
+} from "../lib/cableRuns";
+import { sortMarkupsForRender } from "../lib/markupOrdering";
 
 /**
  * Builds and downloads a branded multi-sheet PDF:
@@ -111,6 +130,9 @@ export async function exportMarkupPdf(project: Project) {
           project.exportVisibility,
           fonts,
           project.tagDefaults?.fontSize,
+          project.runLabelsVisible === true,
+          project.layers,
+          project.connections,
         );
       } catch (e) {
         console.error(`[export] markup draw failed on sheet "${sheet.name}":`, e);
@@ -623,6 +645,9 @@ function drawMarkupsOnPage(
   exportVisibility: ExportVisibility | undefined,
   fonts: BrandFonts,
   projectTagFontDefault: number | undefined,
+  showRunLabels: boolean,
+  layers: Layer[] | undefined,
+  connections: DeviceConnection[] | undefined,
 ) {
   // Per-markup-kind filter — `false` means the user explicitly toggled
   // the kind off in the Export Visibility panel. Missing entries default
@@ -640,6 +665,7 @@ function drawMarkupsOnPage(
     fonts,
     projectTagFontDefault,
   );
+  const runLabelLayouts = runLabelLayoutsFor(sheet.markups, { showRunLabels });
 
   // First pass: render coverage shapes BEHIND the markups so the device
   // icons stay readable on top of them.
@@ -649,6 +675,13 @@ function drawMarkupsOnPage(
       if (m.kind !== "device") continue;
       if (!isKindVisible(m)) continue;
       try {
+        const parent = m.parentId
+          ? sheet.markups.find(
+              (candidate): candidate is DeviceMarkup =>
+                candidate.kind === "device" && candidate.id === m.parentId,
+            )
+          : null;
+        if (parent) continue;
         drawCoverageForDevice(page, sheet, m);
       } catch (e) {
         console.error(
@@ -659,11 +692,11 @@ function drawMarkupsOnPage(
     }
   }
   // Second pass: device icons + cables + annotations.
-  for (const m of sheet.markups) {
+  for (const m of sortMarkupsForRender(sheet.markups, layers)) {
     if (m.hidden) continue;
     if (!isKindVisible(m)) continue;
     try {
-      drawSingleMarkup(page, sheet, m, tagLayouts, fonts);
+      drawSingleMarkup(page, sheet, m, tagLayouts, runLabelLayouts, fonts, connections);
     } catch (e) {
       // One bad markup must not abort the whole sheet — log and continue so
       // the user still gets the rest of their work in the export.
@@ -723,6 +756,14 @@ function layoutDeviceTags(
   const discs: Disc[] = [];
   for (const m of sheet.markups) {
     if (m.kind !== "device" || !isVisible(m)) continue;
+    if (
+      m.parentId &&
+      sheet.markups.some(
+        (candidate) => candidate.kind === "device" && candidate.id === m.parentId,
+      )
+    ) {
+      continue;
+    }
     const size = m.size ?? 28;
     discs.push({ id: m.id, x: m.x, y: m.y, r: size / 2 });
   }
@@ -741,6 +782,14 @@ function layoutDeviceTags(
   const pending: Pending[] = [];
   for (const m of sheet.markups) {
     if (m.kind !== "device" || !isVisible(m)) continue;
+    if (
+      m.parentId &&
+      sheet.markups.some(
+        (candidate) => candidate.kind === "device" && candidate.id === m.parentId,
+      )
+    ) {
+      continue;
+    }
     const dev = devicesById[m.deviceId];
     if (!dev) continue;
     const labelTextRaw = m.labelOverride
@@ -1179,8 +1228,10 @@ function drawSingleMarkup(
   page: PDFPage,
   sheet: Sheet,
   m: Markup,
-  tagLayouts?: Map<string, TagLayout>,
-  fonts?: BrandFonts,
+  tagLayouts: Map<string, TagLayout>,
+  runLabelLayouts: Map<string, RunLabelLayout>,
+  fonts: BrandFonts,
+  connections?: DeviceConnection[],
 ) {
   // Convert all coords from PDF-down (our markup space) to pdf-lib up
   const py = (yDown: number) => sheet.pageHeight - yDown;
@@ -1195,6 +1246,68 @@ function drawSingleMarkup(
     const r = size / 2;
     const cx = m.x;
     const cy = py(m.y);
+    const parent = m.parentId
+      ? sheet.markups.find(
+          (candidate): candidate is DeviceMarkup =>
+            candidate.kind === "device" && candidate.id === m.parentId,
+        )
+      : null;
+    if (parent) {
+      const bubble = nestedBubblePoint(sheet.markups, parent, m);
+      const bubbleSize = nestedBubbleSize(m);
+      const br = bubbleSize / 2;
+      const bx = bubble.x;
+      const by = py(bubble.y);
+      page.drawCircle({
+        x: bx,
+        y: by,
+        size: br,
+        color: fillSoft,
+        borderColor: color,
+        borderWidth: 0.8,
+      });
+      const scale = bubbleSize / 24;
+      for (const p of dev.icon.paths) {
+        const fill =
+          p.fill === "currentFill"
+            ? fillSoft
+            : p.fill === "currentStroke"
+            ? color
+            : p.fill
+            ? hex(p.fill)
+            : undefined;
+        const stroke =
+          p.stroke === "currentStroke"
+            ? color
+            : p.stroke === "currentFill"
+            ? fillSoft
+            : p.stroke
+            ? hex(p.stroke)
+            : undefined;
+        page.drawSvgPath(p.d, {
+          x: bx - br,
+          y: by + br,
+          scale,
+          color: fill,
+          borderColor: stroke,
+          borderWidth: p.strokeWidth ?? 0,
+        });
+      }
+      const bubbleLabel = safeText(nestedBubbleLabel(m));
+      const labelFontSize =
+        bubbleLabel.length > 0
+          ? Math.max(4, Math.min(5.4, (bubbleSize - 2) / (bubbleLabel.length * 0.55)))
+          : 4.5;
+      const labelWidth = fonts.mono.widthOfTextAtSize(bubbleLabel, labelFontSize);
+      page.drawText(bubbleLabel, {
+        x: bx - labelWidth / 2,
+        y: by - labelFontSize * 0.34,
+        size: labelFontSize,
+        font: fonts.mono,
+        color: hex(nestedBubbleLabelColor("#0B1220")),
+      });
+      return;
+    }
 
     // Halo + disc
     page.drawCircle({
@@ -1300,6 +1413,60 @@ function drawSingleMarkup(
         }
       }
     }
+    if (m.showNestedDevices && isContainerDevice(m)) {
+      const nestedLines = nestedScheduleLines(sheet.markups, m.id, connections, 5).map(safeText);
+      if (nestedLines.length > 0) {
+        const header = safeText(nestedScheduleTitle(m));
+        const scheduleFontSize = 7;
+        const allLines = [header, ...nestedLines];
+        const scheduleW = Math.max(
+          86,
+          Math.min(
+            180,
+            Math.max(
+              ...allLines.map((line) =>
+                fonts.mono.widthOfTextAtSize(line, scheduleFontSize),
+              ),
+            ) + 14,
+          ),
+        );
+        const lineH = scheduleFontSize + 2.5;
+        const scheduleH = 16 + nestedLines.length * lineH + 6;
+        const scheduleX = m.x + r + 8;
+        const scheduleTop = m.y + r + 8;
+        const scheduleY = py(scheduleTop) - scheduleH;
+        page.drawRectangle({
+          x: scheduleX,
+          y: scheduleY,
+          width: scheduleW,
+          height: scheduleH,
+          color: hex("#0B1220"),
+          borderColor: color,
+          borderWidth: 0.35,
+          opacity: 0.94,
+        });
+        page.drawText(header, {
+          x: scheduleX + 7,
+          y: scheduleY + scheduleH - 12,
+          size: scheduleFontSize,
+          font: fonts.mono,
+          color: hex("#F4B740"),
+        });
+        nestedLines.forEach((line, i) => {
+          const clipped =
+            fonts.mono.widthOfTextAtSize(line, scheduleFontSize) > scheduleW - 14
+              ? line.slice(0, 26) + "..."
+              : line;
+          page.drawText(clipped, {
+            x: scheduleX + 7,
+            y: scheduleY + scheduleH - 12 - (i + 1) * lineH,
+            size: scheduleFontSize,
+            font: fonts.mono,
+            color: hex("#D9E2F2"),
+          });
+        });
+      }
+    }
     return;
   }
 
@@ -1309,77 +1476,67 @@ function drawSingleMarkup(
     const color = hex(cab.color);
     const flat = m.points;
     if (flat.length < 4) return;
-    // Draw segments as separate lines (dash if present)
-    for (let i = 2; i < flat.length; i += 2) {
-      page.drawLine({
-        start: { x: flat[i - 2], y: py(flat[i - 1]) },
-        end: { x: flat[i], y: py(flat[i + 1]) },
-        thickness: cab.thickness ?? 2,
-        color,
-        dashArray: cab.dash,
+    if (m.routeStyle === "archedDrop" && flat.length === 4) {
+      page.drawSvgPath(archedCablePath(flat), {
+        x: 0,
+        y: sheet.pageHeight,
+        borderColor: color,
+        borderWidth: cab.thickness ?? 2,
       });
+    } else {
+      // Draw segments as separate lines (dash if present)
+      for (let i = 2; i < flat.length; i += 2) {
+        page.drawLine({
+          start: { x: flat[i - 2], y: py(flat[i - 1]) },
+          end: { x: flat[i], y: py(flat[i + 1]) },
+          thickness: cab.thickness ?? 2,
+          color,
+          dashArray: cab.dash,
+        });
+      }
     }
-    // Length + connector pill — always paint a label so even uncalibrated
-    // sheets show what kind of run is what; calibrated sheets get real
-    // feet, otherwise we fall back to a "~Npx" estimate.
+    // Compact high-contrast run label. Keep endpoint text in the same
+    // unobtrusive chip instead of drawing bulky endpoint badges.
     const lenPts = polylineLengthPts(flat);
     const ft = ptsToFeet(lenPts, sheet.calibration);
     const lengthText =
       ft !== null ? formatFeet(ft, 0) : `~${lenPts.toFixed(0)}px`;
-    const labelParts = [`${cab.shortCode}  ${lengthText}`];
-    if (m.connector) labelParts.push(m.connector);
-    const text = safeText(labelParts.join("  ·  "));
+    const labelPrefix =
+      m.cableId === "conduit"
+        ? compactConduitLabel(m)
+        : fiberCompactLabel(m.cableId, cab.shortCode, m);
+    const runCount = runCountFor(m);
+    const text = safeText(visualRunLabel(m, labelPrefix, runCount, lengthText));
+    const lines = text.split("\n");
+    const longestLine = lines.reduce((max, line) => Math.max(max, line.length), 0);
     const mid = midOfFlat(flat);
-    const fontSize = 8;
-    const w = text.length * fontSize * 0.6 + 12;
+    const labelLayout = runLabelLayouts?.get(m.id);
+    if (labelLayout?.visible === false) return;
+    const labelOffset = labelLayout?.offset ?? { dx: 0, dy: -11 };
+    const labelX = mid.x + labelOffset.dx;
+    const labelY = mid.y + labelOffset.dy;
+    const fontSize = lines.length > 1 ? 6.4 : 7;
+    const h = lines.length > 1 ? 18 : 11;
+    const w = Math.min(220, Math.max(38, longestLine * fontSize * 0.58 + 12));
     page.drawRectangle({
-      x: mid.x - w / 2,
-      y: py(mid.y) + 3,
+      x: labelX - w / 2,
+      y: py(labelY) + 7,
       width: w,
-      height: 13,
+      height: h,
       color: hex("#0B1220"),
       borderColor: color,
       borderWidth: 0.4,
-      opacity: 0.95,
+      opacity: 0.92,
     });
-    page.drawText(text, {
-      x: mid.x - w / 2 + 6,
-      y: py(mid.y) + 6,
-      size: fontSize,
-      color: hex("#F5F7FA"),
+    lines.forEach((line, i) => {
+      const tw = line.length * fontSize * 0.52;
+      page.drawText(line, {
+        x: labelX - tw / 2,
+        y: py(labelY) + 10 + (lines.length - 1 - i) * (fontSize + 1.4),
+        size: fontSize,
+        color: hex("#F5F7FA"),
+      });
     });
-
-    // Endpoint A / B chips at the polyline ends so a glance at the export
-    // tells the install crew what plugs into what. We render them as
-    // small filled tags in the cable's color, matching the on-canvas look.
-    const drawEndpoint = (
-      label: string | undefined,
-      prefix: string,
-      ex: number,
-      ey: number,
-    ) => {
-      if (!label) return;
-      const t = safeText(`${prefix} · ${label}`);
-      const ww = t.length * 7 * 0.6 + 8;
-      page.drawRectangle({
-        x: ex + 4,
-        y: py(ey) - 4,
-        width: ww,
-        height: 11,
-        color,
-        opacity: 0.95,
-      });
-      page.drawText(t, {
-        x: ex + 7,
-        y: py(ey) - 1,
-        size: 7,
-        color: hex("#0B1220"),
-      });
-    };
-    if (flat.length >= 4) {
-      drawEndpoint(m.endpointA, "A", flat[0], flat[1]);
-      drawEndpoint(m.endpointB, "B", flat[flat.length - 2], flat[flat.length - 1]);
-    }
     return;
   }
 
@@ -1837,6 +1994,43 @@ function midOfFlat(flat: number[]) {
     acc += seg;
   }
   return { x: flat[flat.length - 2], y: flat[flat.length - 1] };
+}
+
+function visualRunLabel(
+  m: {
+    cableId: string;
+    connector?: string;
+    endpointA?: string;
+    endpointB?: string;
+  },
+  labelPrefix: string,
+  runCount: number,
+  lengthText: string,
+) {
+  const primary = `${labelPrefix}${runCount > 1 ? ` x${runCount}` : ""} · ${lengthText}`;
+  const endpoints = [m.endpointA, m.endpointB].filter(Boolean).join(" -> ");
+  if (m.cableId === "conduit") {
+    return endpoints && endpoints.length <= 20 ? `${primary}\n${endpoints}` : primary;
+  }
+  const parts = [primary];
+  if (m.connector) parts.push(m.connector);
+  const secondary = [m.connector, endpoints && endpoints.length <= 28 ? endpoints : ""]
+    .filter(Boolean)
+    .join(" · ");
+  return secondary ? `${primary}\n${secondary}` : primary;
+}
+
+function archedCablePath(points: number[]) {
+  const [x1, y1, x2, y2] = points;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.hypot(dx, dy) || 1;
+  const arch = Math.min(42, Math.max(14, len * 0.18));
+  const nx = -dy / len;
+  const ny = dx / len;
+  const cx = (x1 + x2) / 2 + nx * arch;
+  const cy = (y1 + y2) / 2 + ny * arch;
+  return `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`;
 }
 
 function mix(a: any, b: any, t: number) {

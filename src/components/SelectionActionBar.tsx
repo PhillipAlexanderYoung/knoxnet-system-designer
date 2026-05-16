@@ -1,7 +1,8 @@
 import { useMemo } from "react";
 import { useProjectStore, selectActiveSheet, type Markup } from "../store/projectStore";
 import { devicesById } from "../data/devices";
-import { Trash2, Copy, Lock, LockOpen } from "lucide-react";
+import { endpointFromMarkup, isRouteInfrastructureMarkup } from "../lib/cableRuns";
+import { Trash2, Copy, Lock, LockOpen, Cable } from "lucide-react";
 
 /**
  * A small HTML floating action bar that appears next to the currently-selected
@@ -17,11 +18,16 @@ export function SelectionActionBar() {
   const setSelected = useProjectStore((s) => s.setSelected);
   const addMarkup = useProjectStore((s) => s.addMarkup);
   const nextTag = useProjectStore((s) => s.nextTag);
+  const cableRunDraft = useProjectStore((s) => s.cableRunDraft);
+  const setActiveTool = useProjectStore((s) => s.setActiveTool);
+  const placeCableRunEndpoint = useProjectStore((s) => s.placeCableRunEndpoint);
+  const branchCableRunToEndpoints = useProjectStore((s) => s.branchCableRunToEndpoints);
 
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
   const items: Markup[] = useMemo(() => {
     if (!sheet) return [];
-    return sheet.markups.filter((m) => selected.includes(m.id));
-  }, [sheet, selected]);
+    return sheet.markups.filter((m) => selectedSet.has(m.id));
+  }, [sheet, selectedSet]);
 
   if (items.length === 0 || !sheet) return null;
 
@@ -65,6 +71,24 @@ export function SelectionActionBar() {
   };
 
   const hasDevices = items.some((m) => m.kind === "device");
+  const routeOrigin = items.find(
+    (m) => m.kind === "device" && isRouteInfrastructureMarkup(m),
+  );
+  const cameraEndpoints = items
+    .filter((m) => m.kind === "device" && m.category === "cameras")
+    .map((m) => endpointFromMarkup(m))
+    .filter((m): m is NonNullable<typeof m> => !!m);
+  const canRouteDrops =
+    cameraEndpoints.length > 0 && (!!routeOrigin || (cableRunDraft?.points.length ?? 0) > 0);
+
+  const onRouteDrops = () => {
+    setActiveTool("cable");
+    if (routeOrigin) {
+      const origin = endpointFromMarkup(routeOrigin);
+      if (origin) placeCableRunEndpoint(origin);
+    }
+    branchCableRunToEndpoints(cameraEndpoints);
+  };
 
   return (
     <div
@@ -86,6 +110,15 @@ export function SelectionActionBar() {
             title="Duplicate (⌘D)"
           >
             <Copy className="w-3.5 h-3.5" />
+          </button>
+        )}
+        {canRouteDrops && (
+          <button
+            onClick={onRouteDrops}
+            className="px-2 py-1.5 hover:bg-white/5 text-ink-200 hover:text-ink-50"
+            title="Route selected cameras from Pull Box / current Cable Run origin"
+          >
+            <Cable className="w-3.5 h-3.5" />
           </button>
         )}
         <button
@@ -114,7 +147,7 @@ function labelFor(m: Markup): string {
     case "device":
       return m.tag || "Device";
     case "cable":
-      return "Cable Run";
+      return m.cableId === "conduit" ? "Conduit Run" : "Cable Run";
     case "text":
       return "Text";
     case "callout":

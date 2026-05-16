@@ -88,7 +88,7 @@ export function resolveCoverage(m: DeviceMarkup): EffectiveCoverage | null {
     showRangeMarkers: override.showRangeMarkers ?? isCamera,
     showCenterline: override.showCenterline ?? isCamera,
     showQualityZones: override.showQualityZones ?? false,
-    showLabel: override.showLabel ?? isCamera,
+    showLabel: override.showLabel ?? false,
   };
 }
 
@@ -116,4 +116,22 @@ export function konvaSectorStart(
   sweepDeg: number,
 ): number {
   return -90 + deviceRotationDeg - sweepDeg / 2;
+}
+
+export function normalizeRotationDeg(deg: number): number {
+  return ((deg % 360) + 360) % 360;
+}
+
+/**
+ * Convert an aim point in app-space (y-down) into the app's device rotation
+ * convention: 0deg faces up, increasing clockwise.
+ */
+export function rotationDegFromPoint(
+  center: { x: number; y: number },
+  point: { x: number; y: number },
+): number {
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  if (dx === 0 && dy === 0) return 0;
+  return normalizeRotationDeg((Math.atan2(dy, dx) * 180) / Math.PI + 90);
 }
