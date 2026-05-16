@@ -68,7 +68,13 @@ function fuzzyScore(d: DeviceType, q: string): number {
   return score;
 }
 
-export function DevicePalette() {
+export function DevicePalette({
+  className = "",
+  onClose,
+}: {
+  className?: string;
+  onClose?: () => void;
+}) {
   const activeDeviceId = useProjectStore((s) => s.activeDeviceId);
   const setActiveDevice = useProjectStore((s) => s.setActiveDevice);
   const togglePalette = useProjectStore((s) => s.togglePalette);
@@ -120,14 +126,14 @@ export function DevicePalette() {
   }, [list, q]);
 
   return (
-    <div className="absolute left-4 top-20 bottom-16 w-80 panel rounded-xl flex flex-col z-20 animate-slide-up">
+    <div className={`absolute left-3 right-3 top-14 bottom-20 z-40 panel rounded-xl flex flex-col animate-slide-up md:left-4 md:right-auto md:top-20 md:bottom-16 md:w-80 md:z-20 ${className}`}>
       <div className="px-3 py-2.5 border-b border-white/5 flex items-center justify-between">
         <div className="label">Device Library</div>
         <div className="flex items-center gap-1">
           <span className="text-[10px] font-mono text-ink-400">
             {list.length} of {devices.length}
           </span>
-          <button onClick={togglePalette} className="text-ink-400 hover:text-ink-50 ml-1">
+          <button onClick={onClose ?? togglePalette} className="w-10 h-10 -my-2 rounded-full inline-flex items-center justify-center text-ink-400 hover:text-ink-50 hover:bg-white/5 md:h-auto md:w-auto md:rounded-none md:hover:bg-transparent md:ml-1">
             <X className="w-3.5 h-3.5" />
           </button>
         </div>

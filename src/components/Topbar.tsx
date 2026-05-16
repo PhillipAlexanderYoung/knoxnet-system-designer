@@ -141,12 +141,14 @@ export function Topbar() {
   };
 
   return (
-    <header className="h-14 px-4 flex items-center justify-between border-b border-white/5 bg-ink-800/80 backdrop-blur-md z-30 relative">
-      <div className="flex items-center gap-6">
-        <Wordmark size="sm" showTagline={false} />
-        <div className="h-6 w-px bg-white/10" />
-        <div className="flex items-center gap-2">
-          <Home className="w-3.5 h-3.5 text-ink-400" />
+    <header className="h-12 px-2 flex items-center justify-between border-b border-white/5 bg-ink-800/80 backdrop-blur-md z-30 relative md:h-14 md:px-4">
+      <div className="min-w-0 flex items-center gap-2 md:gap-6">
+        <div className="hidden md:block">
+          <Wordmark size="sm" showTagline={false} />
+        </div>
+        <div className="hidden h-6 w-px bg-white/10 md:block" />
+        <div className="min-w-0 flex items-center gap-2">
+          <Home className="hidden w-3.5 h-3.5 text-ink-400 sm:block" />
           {editingName ? (
             <input
               autoFocus
@@ -159,23 +161,23 @@ export function Topbar() {
                 if (e.key === "Enter") (e.target as HTMLInputElement).blur();
                 if (e.key === "Escape") setEditingName(false);
               }}
-              className="input max-w-xs"
+              className="input max-w-[44vw] md:max-w-xs"
             />
           ) : (
             <button
               onClick={() => setEditingName(true)}
-              className="text-sm text-ink-100 font-medium hover:text-amber-knox transition-colors"
+              className="max-w-[48vw] truncate text-sm text-ink-100 font-medium hover:text-amber-knox transition-colors md:max-w-xs"
             >
               {project.meta.projectName}
             </button>
           )}
           {project.meta.projectNumber && (
-            <span className="chip">#{project.meta.projectNumber}</span>
+            <span className="hidden chip lg:inline-flex">#{project.meta.projectNumber}</span>
           )}
         </div>
-        <div className="h-6 w-px bg-white/10" />
+        <div className="hidden h-6 w-px bg-white/10 md:block" />
         {/* View tabs */}
-        <div className="inline-flex items-center bg-ink-700/60 border border-white/5 rounded-md p-0.5">
+        <div className="hidden md:inline-flex items-center bg-ink-700/60 border border-white/5 rounded-md p-0.5">
           <button
             onClick={() => setView("sheets")}
             className={`px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition-all ${view === "sheets" ? "bg-amber-knox/15 text-amber-knox" : "text-ink-300 hover:text-ink-100"}`}
@@ -210,36 +212,46 @@ export function Topbar() {
         </div>
       </div>
 
-      <div className="flex items-center gap-2">
-        <IngestProgress />
-        <QualityToggle />
-        <button
-          onClick={toggleCmd}
-          className="btn-ghost"
-          title="Command palette (⌘K)"
-        >
-          <Command className="w-4 h-4" />
-          <span className="font-mono text-xs">⌘K</span>
-        </button>
+      <div className="shrink-0 flex items-center gap-1 md:gap-2">
+        <div className="hidden sm:block">
+          <IngestProgress />
+        </div>
+        <div className="hidden md:block">
+          <QualityToggle />
+        </div>
+        <div className="hidden md:block">
+          <button
+            onClick={toggleCmd}
+            className="btn-ghost"
+            title="Command palette (⌘K)"
+          >
+            <Command className="w-4 h-4" />
+            <span className="font-mono text-xs">⌘K</span>
+          </button>
+        </div>
         <button onClick={onSave} className="btn-ghost" title="Save project">
           <Save className="w-4 h-4" />
         </button>
-        <button
-          onClick={() => setForkOpen(true)}
-          className="btn-ghost"
-          title="Save as new version (fork)"
-          disabled={forking}
-        >
-          <GitFork className="w-4 h-4" />
-        </button>
-        <button
-          onClick={toggleBid}
-          className="btn"
-          title="Bid panel (⌘B)"
-        >
-          <Calculator className="w-4 h-4" />
-          Bid
-        </button>
+        <div className="hidden sm:block">
+          <button
+            onClick={() => setForkOpen(true)}
+            className="btn-ghost"
+            title="Save as new version (fork)"
+            disabled={forking}
+          >
+            <GitFork className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="hidden sm:block">
+          <button
+            onClick={toggleBid}
+            className="btn"
+            title="Bid panel (⌘B)"
+          >
+            <Calculator className="w-4 h-4" />
+            Bid
+          </button>
+        </div>
         <div className="relative">
           <button
             onClick={() => setExportOpen((v) => !v)}
@@ -247,8 +259,8 @@ export function Topbar() {
             disabled={exporting}
           >
             <FileDown className="w-4 h-4" />
-            {exporting ? "Exporting…" : "Export"}
-            <ChevronDown className="w-3 h-3" />
+            <span className="hidden sm:inline">{exporting ? "Exporting…" : "Export"}</span>
+            <ChevronDown className="hidden w-3 h-3 sm:block" />
           </button>
           {exportOpen && (
             <div className="absolute right-0 mt-2 w-64 panel rounded-lg overflow-hidden animate-scale-in z-40">
@@ -324,7 +336,7 @@ export function Topbar() {
         <button onClick={toggleSettings} className="btn-ghost" title="Settings (⌘,)">
           <Settings2 className="w-4 h-4" />
         </button>
-        <button onClick={onClose} className="btn-ghost text-ink-400" title="Close project">
+        <button onClick={onClose} className="hidden btn-ghost text-ink-400 sm:inline-flex" title="Close project">
           ×
         </button>
       </div>

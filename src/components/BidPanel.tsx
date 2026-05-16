@@ -23,7 +23,7 @@ import {
 
 type RepriceScope = "all" | "devices" | "cables" | "racks";
 
-export function BidPanel() {
+export function BidPanel({ className = "" }: { className?: string }) {
   const project = useProjectStore((s) => s.project);
   const toggle = useProjectStore((s) => s.toggleBidPanel);
   const setDeviceOverride = useProjectStore((s) => s.setDeviceOverride);
@@ -126,7 +126,7 @@ export function BidPanel() {
   };
 
   return (
-    <aside className="w-96 shrink-0 border-l border-white/5 bg-ink-800/85 backdrop-blur-md flex flex-col animate-slide-up">
+    <aside className={`w-96 shrink-0 border-l border-white/5 bg-ink-800/85 backdrop-blur-md flex flex-col animate-slide-up ${className}`}>
       <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Calculator className="w-4 h-4 text-amber-knox" />

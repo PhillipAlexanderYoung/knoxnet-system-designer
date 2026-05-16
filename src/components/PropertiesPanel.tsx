@@ -107,7 +107,7 @@ import {
   ClipboardList,
 } from "lucide-react";
 
-export function PropertiesPanel() {
+export function PropertiesPanel({ className = "" }: { className?: string }) {
   const sheet = useProjectStore(selectActiveSheet);
   const selected = useProjectStore((s) => s.selectedMarkupIds);
   const updateMarkup = useProjectStore((s) => s.updateMarkup);
@@ -157,7 +157,7 @@ export function PropertiesPanel() {
   };
 
   return (
-    <aside className="w-72 shrink-0 border-l border-white/5 bg-ink-800/60 backdrop-blur-md flex flex-col">
+    <aside className={`w-72 shrink-0 border-l border-white/5 bg-ink-800/60 backdrop-blur-md flex flex-col ${className}`}>
       <div className="px-3 py-2.5 border-b border-white/5 flex items-center justify-between">
         <div className="label">Properties</div>
         {selectedMarkups.length > 0 && (

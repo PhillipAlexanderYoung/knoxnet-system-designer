@@ -30,7 +30,7 @@ import { ReportsTab } from "./reports/ReportsTab";
 
 type Tab = "sheets" | "layers" | "reports";
 
-export function LeftRail() {
+export function LeftRail({ className = "" }: { className?: string }) {
   const project = useProjectStore((s) => s.project);
   const activeSheetId = useProjectStore((s) => s.activeSheetId);
   const setActiveSheet = useProjectStore((s) => s.setActiveSheet);
@@ -93,7 +93,7 @@ export function LeftRail() {
   };
 
   return (
-    <aside className="w-60 shrink-0 border-r border-white/5 bg-ink-800/60 backdrop-blur-md flex flex-col">
+    <aside className={`w-60 shrink-0 border-r border-white/5 bg-ink-800/60 backdrop-blur-md flex flex-col ${className}`}>
       <div className="flex border-b border-white/5">
         <button
           onClick={() => setTab("sheets")}

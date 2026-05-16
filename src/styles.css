@@ -107,6 +107,22 @@ body,
   }
 }
 
+@media (max-width: 767px) {
+  .tool-btn {
+    min-width: 44px;
+    width: 44px;
+    height: 44px;
+    flex: 0 0 auto;
+  }
+
+  .btn,
+  .btn-primary,
+  .btn-ghost,
+  .input {
+    min-height: 40px;
+  }
+}
+
 /* Dotted grid background for the workspace canvas backdrop */
 .workspace-grid {
   background-color: #050913;

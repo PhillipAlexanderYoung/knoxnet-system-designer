@@ -13,7 +13,7 @@ export function StatusBar() {
   const ftY = cursor && sheet ? ptsToFeet(cursor.y, sheet.calibration) : null;
 
   return (
-    <div className="h-7 px-3 flex items-center justify-between text-[11px] font-mono text-ink-400 border-t border-white/5 bg-ink-900/80 backdrop-blur-md">
+    <div className="hidden h-7 px-3 md:flex items-center justify-between text-[11px] font-mono text-ink-400 border-t border-white/5 bg-ink-900/80 backdrop-blur-md">
       <div className="flex items-center gap-4">
         <span>
           <span className="text-ink-500">tool · </span>
