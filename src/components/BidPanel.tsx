@@ -29,6 +29,7 @@ export function BidPanel() {
   const setDeviceOverride = useProjectStore((s) => s.setDeviceOverride);
   const setCableOverride = useProjectStore((s) => s.setCableOverride);
   const setRackOverride = useProjectStore((s) => s.setRackDeviceOverride);
+  const setBidLineLaborOverride = useProjectStore((s) => s.setBidLineLaborOverride);
   const updateBidDefaults = useProjectStore((s) => s.updateBidDefaults);
   const setVis = useProjectStore((s) => s.setBidExportVisibility);
   const pushToast = useProjectStore((s) => s.pushToast);
@@ -146,15 +147,16 @@ export function BidPanel() {
                 Reprice Placed Items
               </div>
             </div>
-            <button
-              onClick={resetPlacedOverrides}
-              disabled={placedSummary === 0}
-              className="btn-ghost text-[10px] disabled:opacity-30"
-              title="Reset all placed items to default catalog prices"
-            >
-              <RotateCcw className="w-3 h-3" />
-              Reset
-            </button>
+            <BidHint label="Reset all placed items to default catalog prices">
+              <button
+                onClick={resetPlacedOverrides}
+                disabled={placedSummary === 0}
+                className="btn-ghost text-[10px] disabled:opacity-30"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Reset
+              </button>
+            </BidHint>
           </div>
           <div className="grid grid-cols-[1fr_auto] gap-1.5">
             <div className="relative">
@@ -191,7 +193,7 @@ export function BidPanel() {
           <div className="text-[10px] text-ink-400 leading-relaxed">
             Only items actually placed in this project are repriced. Use
             Settings → Pricing to reprice the entire catalog. Click any unit
-            cost below to edit a single line.
+            cost or labor total below to edit a single line.
           </div>
         </div>
 
@@ -229,10 +231,14 @@ export function BidPanel() {
                 qty={`${d.qty}`}
                 unitCost={d.unitCost}
                 extCost={d.extCost}
-                labor={`${d.extLabor.toFixed(1)} hr`}
+                laborHours={d.extLabor}
+                calculatedLaborHours={d.calculatedLabor}
+                laborOverridden={d.laborOverridden}
                 overridden={ov?.cost !== undefined}
                 onChangeUnit={(v) => setDeviceOverride(d.deviceId, { cost: v })}
                 onResetUnit={() => setDeviceOverride(d.deviceId, null)}
+                onChangeLabor={(v) => setBidLineLaborOverride(d.lineId, v)}
+                onResetLabor={() => setBidLineLaborOverride(d.lineId, null)}
               />
             );
           })}
@@ -258,10 +264,14 @@ export function BidPanel() {
                 qty={`${d.qty}`}
                 unitCost={d.unitCost}
                 extCost={d.extCost}
-                labor={`${d.extLabor.toFixed(1)} hr`}
+                laborHours={d.extLabor}
+                calculatedLaborHours={d.calculatedLabor}
+                laborOverridden={d.laborOverridden}
                 overridden={ov?.cost !== undefined}
                 onChangeUnit={(v) => setRackOverride(d.deviceId, { cost: v })}
                 onResetUnit={() => setRackOverride(d.deviceId, null)}
+                onChangeLabor={(v) => setBidLineLaborOverride(d.lineId, v)}
+                onResetLabor={() => setBidLineLaborOverride(d.lineId, null)}
               />
             );
           })}
@@ -286,10 +296,14 @@ export function BidPanel() {
                 unitCost={c.costPerFoot}
                 unitLabel="/ft"
                 extCost={c.extCost}
-                labor={`${c.extLabor.toFixed(1)} hr`}
+                laborHours={c.extLabor}
+                calculatedLaborHours={c.calculatedLabor}
+                laborOverridden={c.laborOverridden}
                 overridden={ov?.costPerFoot !== undefined}
                 onChangeUnit={(v) => setCableOverride(c.cableId, { costPerFoot: v })}
                 onResetUnit={() => setCableOverride(c.cableId, null)}
+                onChangeLabor={(v) => setBidLineLaborOverride(c.lineId, v)}
+                onResetLabor={() => setBidLineLaborOverride(c.lineId, null)}
               />
             );
           })}
@@ -297,7 +311,7 @@ export function BidPanel() {
 
         <Section title="Rollup">
           <div className="text-[10px] text-ink-400 leading-relaxed mb-1.5">
-            Click a rate to edit. Use the <Eye className="w-2.5 h-2.5 inline-block" /> toggle to choose what shows on the customer-facing export.
+            Click a rate or line labor total to edit. Use the <Eye className="w-2.5 h-2.5 inline-block" /> toggle to choose what shows on the customer-facing export.
           </div>
           <RollupRow
             label="Material"
@@ -357,34 +371,46 @@ export function BidPanel() {
             <FileDown className="w-4 h-4 text-amber-knox" />
             <div className="text-xs font-medium text-ink-100">Quick Export</div>
           </div>
-          <button
-            onClick={() => exp("customer-pdf")}
-            disabled={exporting !== null}
-            className="btn-primary w-full justify-center disabled:opacity-50"
-            title="Branded PDF with rollup lines hidden per your visibility settings"
+          <BidHint
+            label="Branded PDF with rollup lines hidden per your visibility settings"
+            className="w-full"
           >
-            <FileDown className="w-3.5 h-3.5" />
-            {exporting === "customer-pdf" ? "Exporting…" : "Customer PDF"}
-          </button>
-          <div className="grid grid-cols-2 gap-1.5">
             <button
-              onClick={() => exp("internal-pdf")}
+              onClick={() => exp("customer-pdf")}
               disabled={exporting !== null}
-              className="btn justify-center disabled:opacity-50"
-              title="Full internal breakdown with overhead, margin, unit costs"
+              className="btn-primary w-full justify-center disabled:opacity-50"
             >
               <FileDown className="w-3.5 h-3.5" />
-              <span className="text-xs">Internal PDF</span>
+              {exporting === "customer-pdf" ? "Exporting…" : "Customer PDF"}
             </button>
-            <button
-              onClick={() => exp("xlsx")}
-              disabled={exporting !== null}
-              className="btn justify-center disabled:opacity-50"
-              title="Internal workbook (Devices, Cables, Racks, Sheets)"
+          </BidHint>
+          <div className="grid grid-cols-2 gap-1.5">
+            <BidHint
+              label="Full internal breakdown with overhead, margin, unit costs"
+              className="w-full"
             >
-              <FileSpreadsheet className="w-3.5 h-3.5" />
-              <span className="text-xs">XLSX</span>
-            </button>
+              <button
+                onClick={() => exp("internal-pdf")}
+                disabled={exporting !== null}
+                className="btn w-full justify-center disabled:opacity-50"
+              >
+                <FileDown className="w-3.5 h-3.5" />
+                <span className="text-xs">Internal PDF</span>
+              </button>
+            </BidHint>
+            <BidHint
+              label="Internal workbook (Devices, Cables, Racks, Sheets)"
+              className="w-full"
+            >
+              <button
+                onClick={() => exp("xlsx")}
+                disabled={exporting !== null}
+                className="btn w-full justify-center disabled:opacity-50"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span className="text-xs">XLSX</span>
+              </button>
+            </BidHint>
           </div>
           <div className="text-[10px] text-ink-400 leading-relaxed">
             Customer view hides any rollup line marked
@@ -443,10 +469,14 @@ interface RowProps {
   unitCost: number;
   unitLabel?: string;
   extCost: number;
-  labor: string;
+  laborHours: number;
+  calculatedLaborHours: number;
+  laborOverridden: boolean;
   overridden: boolean;
   onChangeUnit: (v: number) => void;
   onResetUnit: () => void;
+  onChangeLabor: (v: number) => void;
+  onResetLabor: () => void;
 }
 
 function Row({
@@ -455,18 +485,30 @@ function Row({
   unitCost,
   unitLabel,
   extCost,
-  labor,
+  laborHours,
+  calculatedLaborHours,
+  laborOverridden,
   overridden,
   onChangeUnit,
   onResetUnit,
+  onChangeLabor,
+  onResetLabor,
 }: RowProps) {
   const [editing, setEditing] = useState(false);
+  const [editingLabor, setEditingLabor] = useState(false);
   const [val, setVal] = useState("");
+  const [laborVal, setLaborVal] = useState("");
 
   const commit = () => {
     const v = parseFloat(val);
     if (isFinite(v) && v >= 0) onChangeUnit(round(v, 4));
     setEditing(false);
+  };
+
+  const commitLabor = () => {
+    const v = parseFloat(laborVal);
+    if (isFinite(v) && v >= 0) onChangeLabor(round(v, 2));
+    setEditingLabor(false);
   };
 
   return (
@@ -490,34 +532,94 @@ function Row({
               onBlur={commit}
               className="bg-ink-900 border border-amber-knox/50 rounded px-1 py-0 w-16 text-[10px] font-mono text-ink-50 text-right focus:outline-none"
             />
-            <button
-              onClick={commit}
-              className="text-amber-knox hover:text-amber-glow"
-              title="Save"
-            >
-              <Check className="w-3 h-3" />
-            </button>
+            <BidHint label="Save">
+              <button
+                onClick={commit}
+                className="text-amber-knox hover:text-amber-glow"
+              >
+                <Check className="w-3 h-3" />
+              </button>
+            </BidHint>
           </div>
         ) : (
-          <button
-            onClick={() => {
-              setVal(unitCost.toString());
-              setEditing(true);
-            }}
-            className={`mt-0.5 flex items-center gap-1 ml-auto text-[10px] font-mono leading-tight hover:text-amber-knox transition-colors ${overridden ? "text-amber-knox" : "text-ink-400"}`}
-            title={
+          <BidHint
+            label={
               overridden
                 ? "Custom price set — click to edit, double-click to reset"
                 : "Click to override unit price"
             }
-            onDoubleClick={() => overridden && onResetUnit()}
+            className="ml-auto"
           >
-            <Pencil className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 transition-opacity" />
-            ${unitCost.toFixed(unitCost < 1 ? 3 : 2)}
-            {unitLabel}
-          </button>
+            <button
+              onClick={() => {
+                setVal(unitCost.toString());
+                setEditing(true);
+              }}
+              className={`mt-0.5 flex items-center gap-1 text-[10px] font-mono leading-tight hover:text-amber-knox transition-colors ${overridden ? "text-amber-knox" : "text-ink-400"}`}
+              onDoubleClick={() => overridden && onResetUnit()}
+            >
+              <Pencil className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 transition-opacity" />
+              ${unitCost.toFixed(unitCost < 1 ? 3 : 2)}
+              {unitLabel}
+            </button>
+          </BidHint>
         )}
-        <div className="text-[10px] text-ink-500 leading-tight">{labor}</div>
+        <div className="mt-0.5 flex items-center justify-end gap-1 text-[10px] leading-tight">
+          {editingLabor ? (
+            <>
+              <input
+                autoFocus
+                defaultValue={laborHours.toString()}
+                onChange={(e) => setLaborVal(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitLabor();
+                  if (e.key === "Escape") setEditingLabor(false);
+                }}
+                onBlur={commitLabor}
+                className="bg-ink-900 border border-amber-knox/50 rounded px-1 py-0 w-14 text-[10px] font-mono text-ink-50 text-right focus:outline-none"
+              />
+              <BidHint label="Save labor hours">
+                <button
+                  onClick={commitLabor}
+                  className="text-amber-knox hover:text-amber-glow"
+                >
+                  <Check className="w-3 h-3" />
+                </button>
+              </BidHint>
+            </>
+          ) : (
+            <>
+              <BidHint
+                label={
+                  laborOverridden
+                    ? `Labor overridden from ${calculatedLaborHours.toFixed(1)} hr. Click to edit.`
+                    : "Click to override total labor hours for this bid line"
+                }
+              >
+                <button
+                  onClick={() => {
+                    setLaborVal(laborHours.toString());
+                    setEditingLabor(true);
+                  }}
+                  className={`font-mono hover:text-amber-knox transition-colors ${laborOverridden ? "text-amber-knox" : "text-ink-500"}`}
+                >
+                  {laborHours.toFixed(1)} hr
+                  {laborOverridden ? " override" : ""}
+                </button>
+              </BidHint>
+              {laborOverridden && (
+                <BidHint label={`Reset to calculated labor (${calculatedLaborHours.toFixed(1)} hr)`}>
+                  <button
+                    onClick={onResetLabor}
+                    className="text-ink-500 hover:text-amber-knox"
+                  >
+                    <RotateCcw className="w-2.5 h-2.5" />
+                  </button>
+                </BidHint>
+              )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -568,14 +670,18 @@ function RollupRow({
     <div
       className={`grid grid-cols-[16px_1fr_auto] gap-2 items-center text-xs py-1 px-1 rounded -mx-1 group ${visible ? "" : "opacity-60"}`}
     >
-      <button
-        onClick={onToggleVisible}
-        className="text-ink-400 hover:text-amber-knox transition-colors"
-        title={visible ? "Hidden in customer export — click to show" : "Visible in customer export — click to hide"}
-        style={{ width: 16, height: 16 }}
+      <BidHint
+        label={visible ? "Hidden in customer export — click to show" : "Visible in customer export — click to hide"}
+        align="left"
       >
-        {visible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-      </button>
+        <button
+          onClick={onToggleVisible}
+          className="text-ink-400 hover:text-amber-knox transition-colors"
+          style={{ width: 16, height: 16 }}
+        >
+          {visible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+        </button>
+      </BidHint>
       <div className="min-w-0 flex items-baseline flex-wrap gap-1">
         <span className="text-ink-200">{label}</span>
         {sub && <span className="text-[10px] text-ink-400 font-mono">{sub}</span>}
@@ -599,23 +705,48 @@ function RollupRow({
               </button>
             </span>
           ) : (
-            <button
-              onClick={() => {
-                setVal(String(rate));
-                setEditing(true);
-              }}
-              className="text-[11px] font-mono text-ink-100 hover:text-amber-knox transition-colors flex items-center gap-1"
-              title="Click to edit rate"
-            >
-              <Pencil className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 transition-opacity" />
-              {rateUnit === "/hr" ? "$" : ""}
-              {rate}
-              {rateUnit}
-            </button>
+            <BidHint label="Click to edit rate" align="left">
+              <button
+                onClick={() => {
+                  setVal(String(rate));
+                  setEditing(true);
+                }}
+                className="text-[11px] font-mono text-ink-100 hover:text-amber-knox transition-colors flex items-center gap-1"
+              >
+                <Pencil className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 transition-opacity" />
+                {rateUnit === "/hr" ? "$" : ""}
+                {rate}
+                {rateUnit}
+              </button>
+            </BidHint>
           )
         )}
       </div>
       <span className="font-mono text-ink-100 tabular-nums text-right">{value}</span>
     </div>
+  );
+}
+
+function BidHint({
+  label,
+  children,
+  align = "right",
+  className = "",
+}: {
+  label: string;
+  children: React.ReactNode;
+  align?: "left" | "right";
+  className?: string;
+}) {
+  return (
+    <span className={`relative inline-flex group/bid-hint ${className}`}>
+      {children}
+      <span
+        role="tooltip"
+        className={`pointer-events-none absolute top-full z-50 mt-1 max-w-[min(18rem,calc(100vw_-_2rem))] whitespace-normal break-words rounded-md border border-white/10 bg-ink-900/95 px-2 py-1 text-left text-[10px] font-medium leading-snug text-ink-100 opacity-0 shadow-panel transition-opacity duration-150 group-hover/bid-hint:opacity-100 group-focus-within/bid-hint:opacity-100 ${align === "left" ? "left-0" : "right-0"}`}
+      >
+        {label}
+      </span>
+    </span>
   );
 }

@@ -44,6 +44,13 @@ import {
   nestedConnectionSummary,
   nestedScheduleTitle,
 } from "../lib/nesting";
+import {
+  connectionFromLabel,
+  connectionToLabel,
+  internalEndpointPortLabel,
+} from "../lib/connections";
+import { generatedCableLabelsForProject } from "../lib/cableLabels";
+import { validationWarningsByEntity } from "../lib/validation";
 import { rackDevicesById } from "../data/rackDevices";
 import { fieldLabel } from "./fieldCatalog";
 import { coerceCell, getByPath } from "./paths";
@@ -90,6 +97,7 @@ function deviceCountForTag(project: Project, tag: string): number {
 
 function selectDevices(project: Project): Row[] {
   const rows: Row[] = [];
+  const validationWarnings = validationWarningsByEntity(project);
   for (const sheet of project.sheets) {
     for (const m of sheet.markups) {
       if (m.kind !== "device") continue;
@@ -113,6 +121,7 @@ function selectDevices(project: Project): Row[] {
         parentLabel: parent ? deviceDisplayName(parent) : "",
         nestedDeviceCount: children.length,
         nestedDevices: children.map(deviceDisplayName).join(", "),
+        validationWarnings: validationWarnings.get(dev.id) ?? "",
       });
     }
   }
@@ -121,6 +130,8 @@ function selectDevices(project: Project): Row[] {
 
 function selectCables(project: Project): Row[] {
   const rows: Row[] = [];
+  const physicalLabels = generatedCableLabelsForProject(project);
+  const validationWarnings = validationWarningsByEntity(project);
   for (const sheet of project.sheets) {
     for (const m of sheet.markups) {
       if (m.kind !== "cable") continue;
@@ -144,7 +155,7 @@ function selectCables(project: Project): Row[] {
       const carriedBy = carriedByConduits(sheet, cab);
       rows.push({
         ...cab,
-        physicalLabel: cab.physicalLabel ?? "",
+        physicalLabel: physicalLabels.get(cab.id) ?? cab.physicalLabel ?? "",
         runCount,
         fiberStrandCount,
         cableLabel: cat ? cableDisplayLabel(cab.cableId, cat.label, cab) : cab.cableId,
@@ -155,7 +166,9 @@ function selectCables(project: Project): Row[] {
         lengthFtWithSlack: length
           ? +length.totalWithSlackFt.toFixed(2)
           : +(ft * (1 + slack / 100) * runCount).toFixed(2),
+        servedDevices: (cab.servedDevices ?? []).join(", "),
         carriedByConduit: carriedBy.map((c) => c.endpointA || c.endpointB || c.id).join(", "),
+        validationWarnings: validationWarnings.get(cab.id) ?? "",
       });
     }
   }
@@ -164,8 +177,20 @@ function selectCables(project: Project): Row[] {
 
 function selectConnections(project: Project): Row[] {
   const rows: Row[] = [];
+  const validationWarnings = validationWarningsByEntity(project);
   for (const c of project.connections ?? []) {
-    rows.push({ ...c });
+    const internalPort = internalEndpointPortLabel(c, project);
+    rows.push({
+      ...c,
+      fromPortResolved: connectionFromLabel(c, project),
+      toPortResolved: connectionToLabel(c, project),
+      internalDeviceTag: c.internalEndpoint?.deviceTag ?? "",
+      internalDeviceId: c.internalEndpoint?.deviceId ?? "",
+      internalPortId: c.internalEndpoint?.portId ?? "",
+      internalPort: internalPort || c.internalEndpoint?.port || "",
+      internalContainerTag: c.internalEndpoint?.containerTag ?? "",
+      validationWarnings: validationWarnings.get(c.id) ?? "",
+    });
   }
   return rows;
 }
@@ -201,14 +226,20 @@ function selectAreaSchedules(project: Project): Row[] {
 
 function selectRacks(project: Project): Row[] {
   const rows: Row[] = [];
+  const validationWarnings = validationWarningsByEntity(project);
   for (const r of project.racks ?? []) {
-    rows.push({ ...r, placementCount: r.placements.length });
+    rows.push({
+      ...r,
+      placementCount: r.placements.length,
+      validationWarnings: validationWarnings.get(r.id) ?? "",
+    });
   }
   return rows;
 }
 
 function selectRackPlacements(project: Project): Row[] {
   const rows: Row[] = [];
+  const validationWarnings = validationWarningsByEntity(project);
   for (const r of project.racks ?? []) {
     for (const p of r.placements) {
       const cat = rackDevicesById[p.deviceId];
@@ -222,6 +253,7 @@ function selectRackPlacements(project: Project): Row[] {
         powerWatts: cat?.powerWatts,
         weightLbs: cat?.weightLbs,
         uHeight: cat?.uHeight,
+        validationWarnings: validationWarnings.get(p.id) ?? "",
       });
     }
   }
@@ -248,6 +280,7 @@ function selectPorts(project: Project): Row[] {
   // controller" style reports.
   const rows: Row[] = [];
   const conns = project.connections ?? [];
+  const validationWarnings = validationWarningsByEntity(project);
   for (const sheet of project.sheets) {
     for (const m of sheet.markups) {
       if (m.kind !== "device") continue;
@@ -259,10 +292,16 @@ function selectPorts(project: Project): Row[] {
         const link = conns.find(
           (c) =>
             (c.fromTag === dev.tag && c.fromPortId === port.id) ||
-            (c.toTag === dev.tag && c.toPortId === port.id),
+            (c.toTag === dev.tag && c.toPortId === port.id) ||
+            (c.internalEndpoint?.deviceId === dev.id &&
+              c.internalEndpoint?.portId === port.id),
         );
         const other = link
-          ? link.fromTag === dev.tag
+          ? link.internalEndpoint?.deviceId === dev.id
+            ? link.fromTag === link.internalEndpoint.containerTag
+              ? link.toTag
+              : link.fromTag
+            : link.fromTag === dev.tag
             ? link.toTag
             : link.fromTag
           : "";
@@ -274,6 +313,7 @@ function selectPorts(project: Project): Row[] {
           port,
           isConnected: !!link,
           connectedTo: other,
+          validationWarnings: validationWarnings.get(link?.id ?? dev.id) ?? "",
         });
       }
     }

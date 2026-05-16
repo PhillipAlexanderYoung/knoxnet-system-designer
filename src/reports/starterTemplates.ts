@@ -81,6 +81,7 @@ export function buildStarterTemplates(): ReportTemplate[] {
         { field: "lengthFt", header: "Length (ft)" },
         { field: "lengthFtWithSlack", header: "Length w/ Slack" },
         { field: "connector" },
+        { field: "validationWarnings", header: "Warnings" },
         { field: "sheetName", header: "Sheet" },
         { field: "notes" },
       ],
@@ -108,7 +109,7 @@ export function buildStarterTemplates(): ReportTemplate[] {
     t({
       name: "Head End / Area Schedule",
       description:
-        "Nested devices grouped by Head End, MDF, IDF, rack, enclosure, data rack, or IT closet, including connection summaries.",
+        "Racked devices grouped by Head End, MDF, IDF, rack, enclosure, data rack, or IT closet, including connection summaries.",
       scope: "areaSchedules",
       filters: [],
       columns: [
@@ -173,7 +174,7 @@ export function buildStarterTemplates(): ReportTemplate[] {
         { field: "tag" },
         { field: "deviceLabel" },
         { field: "parentTag", header: "Contained In" },
-        { field: "nestedDevices", header: "Nested Devices" },
+        { field: "nestedDevices", header: "Racked Devices" },
         { field: "systemConfig.model" },
         { field: "systemConfig.serialNumber" },
         { field: "systemConfig.firmwareVersion" },
@@ -203,6 +204,7 @@ export function buildStarterTemplates(): ReportTemplate[] {
         { field: "systemConfig.network.dhcp", format: "bool" },
         { field: "systemConfig.managementUrl", format: "link" },
         { field: "systemConfig.switchPort" },
+        { field: "validationWarnings", header: "Warnings" },
       ],
       sortBy: [{ field: "systemConfig.network.ipAddress", dir: "asc" }],
       formats: ["xlsx", "csv", "json"],

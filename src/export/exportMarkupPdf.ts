@@ -54,7 +54,15 @@ import {
   runLabelLayoutsFor,
   type RunLabelLayout,
 } from "../lib/cableRuns";
-import { sortMarkupsForRender } from "../lib/markupOrdering";
+import {
+  sortDeviceTagsForRender,
+  sortMarkupsForRender,
+} from "../lib/markupOrdering";
+import {
+  clampTagFontSize,
+  resolveTagStyle,
+  type ResolvedTagStyle,
+} from "../lib/tagDefaults";
 
 /**
  * Builds and downloads a branded multi-sheet PDF:
@@ -130,6 +138,7 @@ export async function exportMarkupPdf(project: Project) {
           project.exportVisibility,
           fonts,
           project.tagDefaults?.fontSize,
+          resolveTagStyle(project),
           project.runLabelsVisible === true,
           project.layers,
           project.connections,
@@ -645,6 +654,7 @@ function drawMarkupsOnPage(
   exportVisibility: ExportVisibility | undefined,
   fonts: BrandFonts,
   projectTagFontDefault: number | undefined,
+  tagStyle: ResolvedTagStyle,
   showRunLabels: boolean,
   layers: Layer[] | undefined,
   connections: DeviceConnection[] | undefined,
@@ -691,17 +701,52 @@ function drawMarkupsOnPage(
       }
     }
   }
-  // Second pass: device icons + cables + annotations.
-  for (const m of sortMarkupsForRender(sheet.markups, layers)) {
+  // Second pass: cables/annotations/device bodies in static stack order.
+  // Device tags are drawn in a final overlay pass so they stay readable
+  // above runs and icons without changing the user's layer order.
+  const orderedMarkups = sortMarkupsForRender(sheet.markups, layers);
+  for (const m of orderedMarkups) {
     if (m.hidden) continue;
     if (!isKindVisible(m)) continue;
     try {
-      drawSingleMarkup(page, sheet, m, tagLayouts, runLabelLayouts, fonts, connections);
+      drawSingleMarkup(
+        page,
+        sheet,
+        m,
+        tagLayouts,
+        runLabelLayouts,
+        fonts,
+        tagStyle,
+        connections,
+        "body",
+      );
     } catch (e) {
       // One bad markup must not abort the whole sheet — log and continue so
       // the user still gets the rest of their work in the export.
       console.error(
         `[export] markup ${m.kind} (${m.id}) on "${sheet.name}" failed:`,
+        e,
+      );
+    }
+  }
+  for (const m of sortDeviceTagsForRender(sheet.markups, layers)) {
+    if (m.hidden) continue;
+    if (!isKindVisible(m)) continue;
+    try {
+      drawSingleMarkup(
+        page,
+        sheet,
+        m,
+        tagLayouts,
+        runLabelLayouts,
+        fonts,
+        tagStyle,
+        connections,
+        "tag",
+      );
+    } catch (e) {
+      console.error(
+        `[export] device tag (${m.id}) on "${sheet.name}" failed:`,
         e,
       );
     }
@@ -802,10 +847,11 @@ function layoutDeviceTags(
     // Resolution order: per-instance override > project default >
     // size-scaled auto (clamped to a readable range so tiny icons
     // don't end up with unreadable tags).
-    const fontSize =
+    const fontSize = clampTagFontSize(
       m.tagFontSize ??
-      projectTagFontDefault ??
-      Math.max(7, Math.min(11, size * 0.32));
+        projectTagFontDefault ??
+        Math.max(7, Math.min(11, size * 0.32)),
+    );
     // Precise text width from the embedded font — the legacy
     // char-count approximation could mis-size the pill by a few
     // points which showed up as edge clipping on long tags.
@@ -1231,7 +1277,9 @@ function drawSingleMarkup(
   tagLayouts: Map<string, TagLayout>,
   runLabelLayouts: Map<string, RunLabelLayout>,
   fonts: BrandFonts,
+  tagStyle: ResolvedTagStyle,
   connections?: DeviceConnection[],
+  deviceRenderPart: "body" | "tag" | "all" = "all",
 ) {
   // Convert all coords from PDF-down (our markup space) to pdf-lib up
   const py = (yDown: number) => sheet.pageHeight - yDown;
@@ -1253,6 +1301,7 @@ function drawSingleMarkup(
         )
       : null;
     if (parent) {
+      if (deviceRenderPart === "tag") return;
       const bubble = nestedBubblePoint(sheet.markups, parent, m);
       const bubbleSize = nestedBubbleSize(m);
       const br = bubbleSize / 2;
@@ -1310,43 +1359,46 @@ function drawSingleMarkup(
     }
 
     // Halo + disc
-    page.drawCircle({
-      x: cx,
-      y: cy,
-      size: r,
-      color: fillSoft,
-      borderColor: color,
-      borderWidth: 1.5,
-    });
-
-    // Icon paths (24x24 viewBox centered on (12,12)).
-    const scale = (r * 2) / 24;
-    for (const p of dev.icon.paths) {
-      const fill =
-        p.fill === "currentFill"
-          ? fillSoft
-          : p.fill === "currentStroke"
-          ? color
-          : p.fill
-          ? hex(p.fill)
-          : undefined;
-      const stroke =
-        p.stroke === "currentStroke"
-          ? color
-          : p.stroke === "currentFill"
-          ? fillSoft
-          : p.stroke
-          ? hex(p.stroke)
-          : undefined;
-      page.drawSvgPath(p.d, {
-        x: cx - r,
-        y: cy + r,
-        scale,
-        color: fill,
-        borderColor: stroke,
-        borderWidth: p.strokeWidth ?? 0,
+    if (deviceRenderPart !== "tag") {
+      page.drawCircle({
+        x: cx,
+        y: cy,
+        size: r,
+        color: fillSoft,
+        borderColor: color,
+        borderWidth: 1.5,
       });
+
+      // Icon paths (24x24 viewBox centered on (12,12)).
+      const scale = (r * 2) / 24;
+      for (const p of dev.icon.paths) {
+        const fill =
+          p.fill === "currentFill"
+            ? fillSoft
+            : p.fill === "currentStroke"
+            ? color
+            : p.fill
+            ? hex(p.fill)
+            : undefined;
+        const stroke =
+          p.stroke === "currentStroke"
+            ? color
+            : p.stroke === "currentFill"
+            ? fillSoft
+            : p.stroke
+            ? hex(p.stroke)
+            : undefined;
+        page.drawSvgPath(p.d, {
+          x: cx - r,
+          y: cy + r,
+          scale,
+          color: fill,
+          borderColor: stroke,
+          borderWidth: p.strokeWidth ?? 0,
+        });
+      }
     }
+    if (deviceRenderPart === "body") return;
 
     // Tag + optional friendly label. The position comes from the
     // pre-computed layout pass so the pill won't fully cover other
@@ -1358,7 +1410,8 @@ function drawSingleMarkup(
       : m.tag ?? "";
     const labelText = layout?.text ?? safeText(labelTextRaw);
     if (labelText) {
-      const fontSize = layout?.fontSize ?? Math.max(7, Math.min(11, size * 0.32));
+      const fontSize =
+        layout?.fontSize ?? clampTagFontSize(Math.max(7, Math.min(11, size * 0.32)));
       const tagW = layout?.w ?? labelText.length * fontSize * 0.55 + 10;
       const tagH = layout?.h ?? fontSize + 4;
       // App-space rect (top-left corner). Falls back to the editor
@@ -1374,7 +1427,7 @@ function drawSingleMarkup(
         y: tagY,
         width: tagW,
         height: tagH,
-        color: hex("#0B1220"),
+        color: hex(tagStyle.fillColor),
         borderColor: color,
         borderWidth: 0.4,
         opacity: 0.95,
@@ -1387,7 +1440,7 @@ function drawSingleMarkup(
         y: tagY + 3,
         size: fontSize,
         font: fonts?.mono,
-        color: hex("#F5F7FA"),
+        color: hex(tagStyle.textColor),
       });
       // Leader line for tags that ended up far from their device — a
       // thin dashed connector keeps the association obvious. Skip
@@ -1440,7 +1493,7 @@ function drawSingleMarkup(
           y: scheduleY,
           width: scheduleW,
           height: scheduleH,
-          color: hex("#0B1220"),
+          color: hex(tagStyle.fillColor),
           borderColor: color,
           borderWidth: 0.35,
           opacity: 0.94,
@@ -1450,7 +1503,7 @@ function drawSingleMarkup(
           y: scheduleY + scheduleH - 12,
           size: scheduleFontSize,
           font: fonts.mono,
-          color: hex("#F4B740"),
+          color: hex(tagStyle.textColor),
         });
         nestedLines.forEach((line, i) => {
           const clipped =
@@ -1462,7 +1515,8 @@ function drawSingleMarkup(
             y: scheduleY + scheduleH - 12 - (i + 1) * lineH,
             size: scheduleFontSize,
             font: fonts.mono,
-            color: hex("#D9E2F2"),
+            color: hex(tagStyle.textColor),
+            opacity: 0.88,
           });
         });
       }
@@ -1523,7 +1577,7 @@ function drawSingleMarkup(
       y: py(labelY) + 7,
       width: w,
       height: h,
-      color: hex("#0B1220"),
+      color: hex(tagStyle.fillColor),
       borderColor: color,
       borderWidth: 0.4,
       opacity: 0.92,
@@ -1534,7 +1588,7 @@ function drawSingleMarkup(
         x: labelX - tw / 2,
         y: py(labelY) + 10 + (lines.length - 1 - i) * (fontSize + 1.4),
         size: fontSize,
-        color: hex("#F5F7FA"),
+        color: hex(tagStyle.textColor),
       });
     });
     return;

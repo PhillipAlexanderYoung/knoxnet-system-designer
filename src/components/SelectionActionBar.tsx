@@ -22,6 +22,7 @@ export function SelectionActionBar() {
   const setActiveTool = useProjectStore((s) => s.setActiveTool);
   const placeCableRunEndpoint = useProjectStore((s) => s.placeCableRunEndpoint);
   const branchCableRunToEndpoints = useProjectStore((s) => s.branchCableRunToEndpoints);
+  const lockMoveHint = useProjectStore((s) => s.lockMoveHint);
 
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const items: Markup[] = useMemo(() => {
@@ -41,6 +42,7 @@ export function SelectionActionBar() {
   const aboveOffset = 14;
 
   const allLocked = items.every((m) => m.locked);
+  const showLockPulse = !!lockMoveHint && items.some((m) => m.kind === "device" && m.locked);
 
   const onDuplicate = () => {
     const newIds: string[] = [];
@@ -76,7 +78,7 @@ export function SelectionActionBar() {
   );
   const cameraEndpoints = items
     .filter((m) => m.kind === "device" && m.category === "cameras")
-    .map((m) => endpointFromMarkup(m))
+    .map((m) => endpointFromMarkup(m, { markups: sheet.markups }))
     .filter((m): m is NonNullable<typeof m> => !!m);
   const canRouteDrops =
     cameraEndpoints.length > 0 && (!!routeOrigin || (cableRunDraft?.points.length ?? 0) > 0);
@@ -84,7 +86,7 @@ export function SelectionActionBar() {
   const onRouteDrops = () => {
     setActiveTool("cable");
     if (routeOrigin) {
-      const origin = endpointFromMarkup(routeOrigin);
+      const origin = endpointFromMarkup(routeOrigin, { markups: sheet.markups });
       if (origin) placeCableRunEndpoint(origin);
     }
     branchCableRunToEndpoints(cameraEndpoints);
@@ -116,14 +118,18 @@ export function SelectionActionBar() {
           <button
             onClick={onRouteDrops}
             className="px-2 py-1.5 hover:bg-white/5 text-ink-200 hover:text-ink-50"
-            title="Route selected cameras from Pull Box / current Cable Run origin"
+            title="Route selected cameras from Pull Box / current Cable Run branch origin"
           >
             <Cable className="w-3.5 h-3.5" />
           </button>
         )}
         <button
           onClick={onLockToggle}
-          className="px-2 py-1.5 hover:bg-white/5 text-ink-200 hover:text-ink-50"
+          className={`px-2 py-1.5 hover:bg-white/5 text-ink-200 hover:text-ink-50 ${
+            showLockPulse
+              ? "bg-amber-knox/15 text-amber-knox ring-1 ring-inset ring-amber-knox/50 animate-pulse"
+              : ""
+          }`}
           title={allLocked ? "Unlock" : "Lock"}
         >
           {allLocked ? <Lock className="w-3.5 h-3.5" /> : <LockOpen className="w-3.5 h-3.5" />}

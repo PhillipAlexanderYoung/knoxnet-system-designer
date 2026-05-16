@@ -1,9 +1,13 @@
 // @vitest-environment node
 import { describe, it, expect } from "vitest";
 import {
+  clampTagFontSize,
   clampTagOffset,
+  DEFAULT_TAG_FILL,
+  DEFAULT_TAG_TEXT,
   maxTagOffsetDistance,
   resolveTagFontSize,
+  resolveTagStyle,
 } from "../src/lib/tagDefaults";
 import type { DeviceMarkup, Project } from "../src/store/projectStore";
 
@@ -42,6 +46,45 @@ describe("resolveTagFontSize", () => {
   it("ignores non-finite per-device overrides", () => {
     const p = { tagDefaults: { fontSize: 9 } } as Pick<Project, "tagDefaults">;
     expect(resolveTagFontSize(dev({ tagFontSize: NaN, size: 28 }), p)).toBe(9);
+  });
+
+  it("allows practical sub-6pt tag sizes", () => {
+    const p = { tagDefaults: { fontSize: 4 } } as Pick<Project, "tagDefaults">;
+    expect(resolveTagFontSize(dev({ size: 28 }), p)).toBe(4);
+    expect(clampTagFontSize(2)).toBe(4);
+  });
+});
+
+describe("resolveTagStyle", () => {
+  it("defaults to black tags with white letters", () => {
+    expect(resolveTagStyle(null)).toEqual({
+      fillColor: DEFAULT_TAG_FILL,
+      textColor: DEFAULT_TAG_TEXT,
+      brandTags: false,
+    });
+  });
+
+  it("uses custom project tag colors", () => {
+    const p = {
+      tagDefaults: { fillColor: "#ffffff", textColor: "#112233" },
+    } as Pick<Project, "tagDefaults" | "branding">;
+    expect(resolveTagStyle(p)).toEqual({
+      fillColor: "#FFFFFF",
+      textColor: "#112233",
+      brandTags: false,
+    });
+  });
+
+  it("uses brand accent with contrast-aware text when brand tags are enabled", () => {
+    const p = {
+      tagDefaults: { brandTags: true },
+      branding: { accentColor: "#F4B740" },
+    } as Pick<Project, "tagDefaults" | "branding">;
+    expect(resolveTagStyle(p)).toEqual({
+      fillColor: "#F4B740",
+      textColor: DEFAULT_TAG_FILL,
+      brandTags: true,
+    });
   });
 });
 

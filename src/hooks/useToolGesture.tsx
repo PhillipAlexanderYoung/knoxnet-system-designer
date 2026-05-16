@@ -54,6 +54,7 @@ export function useToolGesture(
   const activeConduitSize = useProjectStore((s) => s.activeConduitSize);
   const activeFiberStrandCount = useProjectStore((s) => s.activeFiberStrandCount);
   const cableRunDraft = useProjectStore((s) => s.cableRunDraft);
+  const cableRunBulkBranch = useProjectStore((s) => s.cableRunBulkBranch);
   const freehandColor = useProjectStore((s) => s.freehandColor);
   const freehandThickness = useProjectStore((s) => s.freehandThickness);
   const freehandErasing = useProjectStore((s) => s.freehandErasing);
@@ -70,6 +71,9 @@ export function useToolGesture(
   const placeCableRunEndpoint = useProjectStore((s) => s.placeCableRunEndpoint);
   const clearCableRunDraft = useProjectStore((s) => s.clearCableRunDraft);
   const finishCableRunDraft = useProjectStore((s) => s.finishCableRunDraft);
+  const beginCableRunBulkBranch = useProjectStore((s) => s.beginCableRunBulkBranch);
+  const commitCableRunBulkBranch = useProjectStore((s) => s.commitCableRunBulkBranch);
+  const cancelCableRunBulkBranch = useProjectStore((s) => s.cancelCableRunBulkBranch);
 
   const withinSheet = (p: { x: number; y: number } | null) =>
     !!p && p.x >= 0 && p.y >= 0 && p.x <= sheet.pageWidth && p.y <= sheet.pageHeight;
@@ -177,11 +181,19 @@ export function useToolGesture(
         setPoints([]);
         setDrag(null);
         setPen(null);
+        cancelCableRunBulkBranch();
         clearCableRunDraft();
       }
     };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === "Shift" && tool === "cable") commitCableRunBulkBranch();
+    };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKeyUp);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     points,
@@ -191,8 +203,21 @@ export function useToolGesture(
     activeConduitSize,
     activeFiberStrandCount,
     clearCableRunDraft,
+    cancelCableRunBulkBranch,
+    commitCableRunBulkBranch,
     finishCableRunDraft,
   ]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+      if (e.key !== "Shift" || e.repeat || tool !== "cable") return;
+      beginCableRunBulkBranch(undefined);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [beginCableRunBulkBranch, tool]);
 
   const onMouseDown = (e: any) => {
     // Skip if a markup child handled the click (it sets cancelBubble)
@@ -510,6 +535,56 @@ export function useToolGesture(
     );
   })();
 
+  const previewBulkBranch = (() => {
+    if (tool !== "cable" || !cableRunBulkBranch || !activeCableId) return null;
+    const cab = cablesById[activeCableId];
+    if (!cab) return null;
+    const route = cableRunBulkBranch.route ?? [];
+    const anchor = route[route.length - 1];
+    const targets = cableRunBulkBranch.targetEndpoints;
+    const hint =
+      route.length === 0
+        ? "Multi-device drop: click origin"
+        : targets.length === 0
+          ? "Click target devices"
+          : `${targets.length} drop${targets.length === 1 ? "" : "s"} placed - release Shift to finish`;
+    return (
+      <Group listening={false} opacity={0.82}>
+        {anchor && (
+          <Circle
+            x={anchor.x}
+            y={anchor.y}
+            radius={3.5}
+            fill="#0B1220"
+            stroke={cab.color}
+            strokeWidth={1}
+          />
+        )}
+        {targets.map((target) => (
+          <Circle
+            key={`bulk-target-${target.deviceMarkupId ?? target.deviceTag ?? `${target.x}:${target.y}`}`}
+            x={target.x}
+            y={target.y}
+            radius={5.5}
+            stroke={cab.color}
+            strokeWidth={1}
+            dash={[3, 2]}
+          />
+        ))}
+        <Group x={(anchor ?? cursor ?? { x: 14, y: 14 }).x + 8} y={(anchor ?? cursor ?? { x: 14, y: 14 }).y - 20}>
+          <Rect
+            width={Math.max(98, hint.length * 4.9 + 10)}
+            height={16}
+            fill="#0B1220"
+            cornerRadius={3}
+            opacity={0.68}
+          />
+          <Text x={5} y={4} text={hint} fontFamily="JetBrains Mono" fontSize={8} fill="#B8C3D7" />
+        </Group>
+      </Group>
+    );
+  })();
+
   const previewDevice = (() => {
     if (tool !== "device" || !activeDeviceId || !cursor) return null;
     const dev = devicesById[activeDeviceId];
@@ -645,6 +720,7 @@ export function useToolGesture(
     <Group listening={false}>
       {previewCalibration}
       {previewCable}
+      {previewBulkBranch}
       {previewPolygon}
       {previewDrag}
       {previewPen}

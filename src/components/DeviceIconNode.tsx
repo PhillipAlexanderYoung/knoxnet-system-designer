@@ -11,7 +11,11 @@ interface Props {
   /** Optional color override (hex). Defaults to the category color. */
   color?: string;
   selected?: boolean;
+  hovered?: boolean;
   onMouseDown?: (e: any) => void;
+  onMouseEnter?: (e: any) => void;
+  onMouseLeave?: (e: any) => void;
+  onTouchStart?: (e: any) => void;
   onClick?: (e: any) => void;
   draggable?: boolean;
   onDragStart?: (e: any) => void;
@@ -32,7 +36,11 @@ export function DeviceIconNode({
   rotation = 0,
   color: colorOverride,
   selected = false,
+  hovered = false,
   onMouseDown,
+  onMouseEnter,
+  onMouseLeave,
+  onTouchStart,
   onClick,
   draggable,
   onDragStart,
@@ -43,12 +51,16 @@ export function DeviceIconNode({
   const fillSoft = color + "33"; // ~20% alpha
   const half = size / 2;
   const iconScale = size / 24;
+  const hoverActive = hovered && !selected;
   return (
     <Group
       x={x}
       y={y}
       rotation={rotation}
       onMouseDown={onMouseDown}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      onTouchStart={onTouchStart}
       onClick={onClick}
       onTap={onClick}
       draggable={draggable}
@@ -68,6 +80,21 @@ export function DeviceIconNode({
           listening={false}
         />
       )}
+      {/* Subtle hover affordance for selectable/touchable devices. */}
+      {hoverActive && (
+        <Circle
+          x={0}
+          y={0}
+          radius={half + 4}
+          stroke={color}
+          strokeWidth={1}
+          opacity={0.55}
+          shadowColor={color}
+          shadowBlur={7}
+          shadowOpacity={0.35}
+          listening={false}
+        />
+      )}
       {/* Background disc */}
       <Circle
         x={0}
@@ -75,7 +102,10 @@ export function DeviceIconNode({
         radius={half}
         fill="#0B1220"
         stroke={color}
-        strokeWidth={1.5}
+        strokeWidth={hoverActive ? 1.9 : 1.5}
+        shadowColor={hoverActive ? color : undefined}
+        shadowBlur={hoverActive ? 5 : 0}
+        shadowOpacity={hoverActive ? 0.3 : 0}
       />
       <Circle x={0} y={0} radius={half - 1.5} fill={fillSoft} listening={false} />
       {/* Centered icon path group */}

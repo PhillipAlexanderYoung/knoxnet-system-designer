@@ -33,6 +33,16 @@ export function sortMarkupsForRender(
     .map(({ markup }) => markup);
 }
 
+export function sortDeviceTagsForRender(
+  markups: Markup[],
+  layers: Layer[] | undefined = DEFAULT_LAYERS,
+): Extract<Markup, { kind: "device" }>[] {
+  return sortMarkupsForRender(markups, layers).filter(
+    (markup): markup is Extract<Markup, { kind: "device" }> =>
+      markup.kind === "device",
+  );
+}
+
 function kindPriority(markup: Markup): number {
   if (markup.kind === "cable") return 0;
   if (markup.kind === "device") return 2;

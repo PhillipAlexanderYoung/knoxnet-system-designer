@@ -8,6 +8,7 @@ import type {
 } from "../store/projectStore";
 import type { Calibration } from "../store/projectStore";
 import { polylineLengthPts, ptsToFeet } from "./geometry";
+import { nestedBubblePoint } from "./nesting";
 
 export const ROUTE_INFRA_DEVICE_IDS = new Set([
   "site-handhole",
@@ -38,6 +39,7 @@ export interface NearestCableRunEndpointCandidate extends CableRunEndpointHit {
 
 export const CABLE_RUN_ENDPOINT_SNAP_PTS = 14;
 export const DEFAULT_SERVICE_LOOP_FT = 10;
+export const CABLE_RUN_SEGMENT_HIT_PTS = 14;
 
 export function isCableAddressableMarkup(markup: Markup): markup is DeviceMarkup {
   if (markup.kind !== "device") return false;
@@ -46,9 +48,15 @@ export function isCableAddressableMarkup(markup: Markup): markup is DeviceMarkup
 
 export function endpointFromMarkup(
   markup: Markup,
-  options: { asRouteWaypoint?: boolean } = {},
+  options: { asRouteWaypoint?: boolean; markups?: Markup[] } = {},
 ): CableRunEndpoint | null {
   if (!isCableAddressableMarkup(markup)) return null;
+  const parent = markup.parentId
+    ? options.markups?.find(
+        (m): m is DeviceMarkup => m.kind === "device" && m.id === markup.parentId,
+      )
+    : null;
+  const anchor = parent ? nestedBubblePoint(options.markups ?? [], parent, markup) : markup;
   const tag = markup.tag?.trim();
   const label = markup.labelOverride?.trim()
     ? `${tag} · ${markup.labelOverride.trim()}`
@@ -56,8 +64,8 @@ export function endpointFromMarkup(
   const routeWaypoint =
     options.asRouteWaypoint === true || ROUTE_INFRA_DEVICE_IDS.has(markup.deviceId);
   return {
-    x: markup.x,
-    y: markup.y,
+    x: anchor.x,
+    y: anchor.y,
     label: label || undefined,
     deviceMarkupId: markup.id,
     deviceTag: tag || undefined,
@@ -132,6 +140,34 @@ export function nearestCableRunEndpoint(
     }
   }
   return best;
+}
+
+export function nearestCableRunPoint(
+  cable: CableMarkup,
+  point: { x: number; y: number },
+  threshold = CABLE_RUN_SEGMENT_HIT_PTS,
+): CableRunEndpoint | null {
+  if (cable.points.length < 2) return null;
+  let best: { x: number; y: number; distance: number } | null = null;
+  for (let i = 2; i < cable.points.length; i += 2) {
+    const candidate = closestPointOnSegment(
+      point,
+      { x: cable.points[i - 2], y: cable.points[i - 1] },
+      { x: cable.points[i], y: cable.points[i + 1] },
+    );
+    if (candidate.distance > threshold) continue;
+    if (!best || candidate.distance < best.distance) best = candidate;
+  }
+  if (!best) return null;
+  return { x: best.x, y: best.y, label: servedDevicesSummary(cable) || cable.endpointA };
+}
+
+export function servedDevicesSummary(
+  markup: Pick<CableMarkup, "servedDevices" | "endpointB">,
+): string {
+  const labels = markup.servedDevices?.filter(Boolean) ?? [];
+  if (labels.length > 0) return labels.join(", ");
+  return markup.endpointB ?? "";
 }
 
 export function buildCableRunMarkup(
@@ -358,10 +394,10 @@ export function runLabelOffsetFor(
 }
 
 /**
- * Decide which cable/conduit run labels should draw. Labels default on, but
- * dense auto-placed clusters are thinned so pull-box fan-outs do not produce
- * a stack of nearly identical tags. Manual label offsets and selected runs
- * always win, which preserves deliberate user placement.
+ * Decide which cable/conduit run labels should draw. Labels are opt-in through
+ * the project-wide toggle; when enabled, dense auto-placed clusters are thinned
+ * so pull-box fan-outs do not produce a stack of nearly identical tags. Manual
+ * label offsets and selected runs win only while the global toggle is on.
  */
 export function runLabelLayoutsFor(
   markups: Markup[],
@@ -370,7 +406,7 @@ export function runLabelLayoutsFor(
     selectedIds?: Set<string>;
   } = {},
 ): Map<string, RunLabelLayout> {
-  const showRunLabels = options.showRunLabels !== false;
+  const showRunLabels = options.showRunLabels === true;
   const selectedIds = options.selectedIds ?? new Set<string>();
   const layouts = new Map<string, RunLabelLayout>();
   type Candidate = {
@@ -510,6 +546,23 @@ function matchingPointIndex(points: number[], x: number, y: number, tolerance = 
     if (Math.hypot(points[i] - x, points[i + 1] - y) <= tolerance) return i / 2;
   }
   return -1;
+}
+
+function closestPointOnSegment(
+  point: { x: number; y: number },
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  const t =
+    lenSq === 0
+      ? 0
+      : Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / lenSq));
+  const x = a.x + dx * t;
+  const y = a.y + dy * t;
+  return { x, y, distance: Math.hypot(point.x - x, point.y - y) };
 }
 
 function cableUsesConduitPath(cable: CableMarkup, conduit: CableMarkup) {

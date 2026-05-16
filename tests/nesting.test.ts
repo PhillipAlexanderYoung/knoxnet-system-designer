@@ -8,14 +8,17 @@ import {
   nearestContainerForDevice,
   nestedBubbleLabel,
   nestedBubbleLabelColor,
+  nestedBubbleHitRadius,
   nestedBubbleSize,
   nestedConnectionSummary,
   nestedScheduleLines,
   nestedScheduleTitle,
   nestedSlotPoint,
 } from "../src/lib/nesting";
+import { buildCableRunMarkup, endpointFromMarkup } from "../src/lib/cableRuns";
 import {
   useProjectStore,
+  type CableMarkup,
   type DeviceMarkup,
   type Project,
 } from "../src/store/projectStore";
@@ -34,7 +37,7 @@ function device(overrides: Partial<DeviceMarkup>): DeviceMarkup {
   } as DeviceMarkup;
 }
 
-function project(markups: DeviceMarkup[]): Project {
+function project(markups: Array<DeviceMarkup | CableMarkup>): Project {
   return {
     id: "p1",
     meta: {
@@ -136,6 +139,7 @@ describe("nesting helpers", () => {
     expect(nestedBubbleLabel(switchMarkup)).toBe("SW1");
     expect(nestedBubbleLabel(controllerMarkup)).toBe("CTR");
     expect(nestedBubbleLabel(switchMarkup).length).toBeLessThanOrEqual(3);
+    expect(nestedBubbleHitRadius(switchMarkup)).toBeGreaterThan(nestedBubbleSize(switchMarkup) / 2);
     expect(nestedBubbleLabelColor("#0B1220")).toBe("#FFFFFF");
     expect(nestedBubbleLabelColor("#F8FAFC")).toBe("#0B1220");
   });
@@ -198,6 +202,107 @@ describe("nesting store behavior", () => {
     expect(moved.y).toBe(200);
   });
 
+  it("unnests a dragged nested bubble and keeps cable attachments intact", () => {
+    const headEnd = device({
+      id: "he1",
+      deviceId: "net-headend",
+      tag: "HE-01",
+      x: 100,
+      y: 100,
+    });
+    const switchMarkup = device({
+      id: "sw1",
+      tag: "SW-01",
+      parentId: "he1",
+    });
+    const initialSlot = nestedSlotPoint([headEnd, switchMarkup], headEnd, switchMarkup);
+    const nestedSwitch = { ...switchMarkup, x: initialSlot.x, y: initialSlot.y };
+    const camera = device({
+      id: "cam1",
+      deviceId: "cam-dome",
+      category: "cameras",
+      layer: "cameras",
+      tag: "CAM-01",
+      x: 220,
+      y: 120,
+    });
+    const run = buildCableRunMarkup("run1", "cat6", [
+      endpointFromMarkup(nestedSwitch, { markups: [headEnd, nestedSwitch, camera] })!,
+      endpointFromMarkup(camera, { markups: [headEnd, nestedSwitch, camera] })!,
+    ]);
+    useProjectStore.getState().loadProject(project([headEnd, nestedSwitch, camera, run]));
+
+    useProjectStore.getState().moveDeviceMarkup("sw1", 260, 240);
+
+    const sheet = useProjectStore.getState().project!.sheets[0];
+    const moved = sheet.markups.find((m) => m.id === "sw1") as DeviceMarkup;
+    const movedRun = sheet.markups.find((m) => m.id === "run1") as CableMarkup;
+    expect(moved.parentId).toBeUndefined();
+    expect(moved).toMatchObject({ x: 260, y: 240 });
+    expect(movedRun.points.slice(0, 2)).toEqual([260, 240]);
+    expect(movedRun.pointAttachments?.[0]).toMatchObject({
+      deviceMarkupId: "sw1",
+      deviceTag: "SW-01",
+    });
+  });
+
+  it("can re-nest a dragged-out device into a different container", () => {
+    const firstHeadEnd = device({
+      id: "he1",
+      deviceId: "net-headend",
+      tag: "HE-01",
+      x: 100,
+      y: 100,
+    });
+    const secondHeadEnd = device({
+      id: "he2",
+      deviceId: "net-headend",
+      tag: "HE-02",
+      x: 300,
+      y: 300,
+    });
+    const switchMarkup = device({ id: "sw1", tag: "SW-01", x: 120, y: 100, parentId: "he1" });
+    useProjectStore
+      .getState()
+      .loadProject(project([firstHeadEnd, secondHeadEnd, switchMarkup]));
+
+    useProjectStore.getState().moveDeviceMarkup("sw1", 240, 240);
+    expect(
+      (useProjectStore.getState().project!.sheets[0].markups.find((m) => m.id === "sw1") as DeviceMarkup)
+        .parentId,
+    ).toBeUndefined();
+
+    useProjectStore.getState().moveDeviceMarkup("sw1", 300, 300);
+
+    const sheet = useProjectStore.getState().project!.sheets[0];
+    const moved = sheet.markups.find((m) => m.id === "sw1") as DeviceMarkup;
+    expect(moved.parentId).toBe("he2");
+    expect(moved).toMatchObject(nestedSlotPoint(sheet.markups, secondHeadEnd, moved));
+  });
+
+  it("blocks nested bubble movement when the parent is locked", () => {
+    const headEnd = device({
+      id: "he1",
+      deviceId: "net-headend",
+      tag: "HE-01",
+      x: 100,
+      y: 100,
+      locked: true,
+    });
+    const switchMarkup = device({ id: "sw1", tag: "SW-01", x: 118, y: 100, parentId: "he1" });
+    useProjectStore.getState().loadProject(project([headEnd, switchMarkup]));
+
+    useProjectStore.getState().moveDeviceMarkup("sw1", 240, 240);
+
+    const moved = useProjectStore
+      .getState()
+      .project!.sheets[0].markups.find((m) => m.id === "sw1") as DeviceMarkup;
+    expect(moved).toMatchObject({ x: 118, y: 100, parentId: "he1" });
+    expect(useProjectStore.getState().lockMoveHint).toMatchObject({
+      message: "Devices are locked. Unlock to move.",
+    });
+  });
+
   it("moves unlocked nested devices with their container", () => {
     const headEnd = device({
       id: "he1",
@@ -219,8 +324,32 @@ describe("nesting store behavior", () => {
 
     const sheet = useProjectStore.getState().project!.sheets[0];
     const movedChild = sheet.markups.find((m) => m.id === "sw1") as DeviceMarkup;
-    expect(movedChild.x).toBe(280);
-    expect(movedChild.y).toBe(270);
+    expect(movedChild.x).toBe(268);
+    expect(movedChild.y).toBe(260);
+  });
+
+  it("locks all device markups without locking cable runs", () => {
+    const headEnd = device({
+      id: "he1",
+      deviceId: "net-headend",
+      tag: "HE-01",
+    });
+    const switchMarkup = device({ id: "sw1", tag: "SW-01" });
+    const cable: CableMarkup = {
+      id: "run1",
+      kind: "cable",
+      layer: "cable",
+      cableId: "cat6",
+      points: [0, 0, 10, 10],
+    };
+    useProjectStore.getState().loadProject(project([headEnd, switchMarkup, cable]));
+
+    expect(useProjectStore.getState().setAllDeviceMarkupsLocked(true)).toBe(2);
+
+    const markups = useProjectStore.getState().project!.sheets[0].markups;
+    expect(markups.find((m) => m.id === "he1")).toMatchObject({ locked: true });
+    expect(markups.find((m) => m.id === "sw1")).toMatchObject({ locked: true });
+    expect(markups.find((m) => m.id === "run1")).not.toMatchObject({ locked: true });
   });
 
   it("links Rack parents to the rack system only for Rack devices", () => {

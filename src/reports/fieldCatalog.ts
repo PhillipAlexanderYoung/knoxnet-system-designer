@@ -47,8 +47,8 @@ const DEVICE_FIELDS: FieldDef[] = [
   { path: "sheetId", label: "Sheet ID", type: "string" },
   { path: "parentTag", label: "Contained In", type: "string", help: "Tag of the parent Rack, Enclosure, Head End, or container" },
   { path: "parentLabel", label: "Container Label", type: "string" },
-  { path: "nestedDeviceCount", label: "Nested Device Count", type: "number" },
-  { path: "nestedDevices", label: "Nested Devices", type: "string" },
+  { path: "nestedDeviceCount", label: "Racked Device Count", type: "number" },
+  { path: "nestedDevices", label: "Racked Devices", type: "string" },
   { path: "x", label: "X (drawing units)", type: "number" },
   { path: "y", label: "Y (drawing units)", type: "number" },
   { path: "rotation", label: "Rotation (deg)", type: "number" },
@@ -129,6 +129,7 @@ const DEVICE_FIELDS: FieldDef[] = [
 
   // Computed
   { path: "connectionCount", label: "Connection Count", type: "number" },
+  { path: "validationWarnings", label: "Validation Warnings", type: "string" },
   { path: "notes", label: "Notes", type: "string" },
 ];
 
@@ -157,10 +158,12 @@ const CABLE_FIELDS: FieldDef[] = [
   { path: "serviceLoopFt", label: "Service Loop (ft)", type: "number" },
   { path: "lengthFtWithSlack", label: "Length w/ Slack (ft)", type: "number" },
   { path: "carriedByConduit", label: "Carried By Conduit", type: "string" },
+  { path: "servedDevices", label: "Served Devices", type: "string" },
   { path: "connector", label: "Connector", type: "string" },
   { path: "endpointA", label: "Endpoint A", type: "string" },
   { path: "endpointB", label: "Endpoint B", type: "string" },
   { path: "slackPercent", label: "Slack %", type: "number" },
+  { path: "validationWarnings", label: "Validation Warnings", type: "string" },
   { path: "label", label: "Label", type: "string" },
   { path: "notes", label: "Notes", type: "string" },
 ];
@@ -170,10 +173,18 @@ const CONNECTION_FIELDS: FieldDef[] = [
   { path: "fromTag", label: "From Device", type: "string" },
   { path: "fromPort", label: "From Port", type: "string" },
   { path: "fromPortId", label: "From Port ID", type: "string" },
+  { path: "fromPortResolved", label: "From Port (resolved)", type: "string" },
   { path: "toTag", label: "To Device", type: "string" },
   { path: "toPort", label: "To Port", type: "string" },
   { path: "toPortId", label: "To Port ID", type: "string" },
+  { path: "toPortResolved", label: "To Port (resolved)", type: "string" },
+  { path: "internalContainerTag", label: "Internal Container", type: "string" },
+  { path: "internalDeviceTag", label: "Internal Device", type: "string" },
+  { path: "internalDeviceId", label: "Internal Device ID", type: "string" },
+  { path: "internalPort", label: "Internal Port", type: "string" },
+  { path: "internalPortId", label: "Internal Port ID", type: "string" },
   { path: "medium", label: "Medium", type: "string" },
+  { path: "validationWarnings", label: "Validation Warnings", type: "string" },
   { path: "label", label: "Label", type: "string" },
   { path: "notes", label: "Notes", type: "string" },
 ];
@@ -197,6 +208,7 @@ const RACK_FIELDS: FieldDef[] = [
   { path: "location", label: "Location", type: "string" },
   { path: "uHeight", label: "U Height", type: "number" },
   { path: "placementCount", label: "Placement Count", type: "number" },
+  { path: "validationWarnings", label: "Validation Warnings", type: "string" },
   { path: "associatedSheetId", label: "Associated Sheet", type: "string" },
 ];
 
@@ -211,6 +223,7 @@ const RACK_PLACEMENT_FIELDS: FieldDef[] = [
   { path: "powerWatts", label: "Power (W)", type: "number" },
   { path: "weightLbs", label: "Weight (lbs)", type: "number" },
   { path: "label", label: "Label Override", type: "string" },
+  { path: "validationWarnings", label: "Validation Warnings", type: "string" },
   { path: "notes", label: "Notes", type: "string" },
 ];
 
@@ -243,6 +256,7 @@ const PORT_FIELDS: FieldDef[] = [
   { path: "port.pluggable", label: "Pluggable", type: "boolean" },
   { path: "isConnected", label: "Connected", type: "boolean" },
   { path: "connectedTo", label: "Connected To", type: "string" },
+  { path: "validationWarnings", label: "Validation Warnings", type: "string" },
 ];
 
 export const FIELD_CATALOG: Record<ReportScope, FieldDef[]> = {

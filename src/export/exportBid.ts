@@ -91,6 +91,8 @@ export async function exportBidXlsx(
         "Ext Cost",
         "Unit Labor (hr)",
         "Ext Labor (hr)",
+        "Labor Override?",
+        "Calculated Labor (hr)",
         "Per-Sheet Counts",
       ];
   const devRows = bid.devices.map((d) =>
@@ -110,6 +112,8 @@ export async function exportBidXlsx(
           d.extCost,
           d.unitLabor,
           d.extLabor,
+          d.laborOverridden ? "yes" : "",
+          d.calculatedLabor,
           d.perSheetCounts.map((p) => `${p.sheetName}: ${p.qty}`).join("; "),
         ],
   );
@@ -123,6 +127,8 @@ export async function exportBidXlsx(
     { wch: 12 },
     { wch: 14 },
     { wch: 14 },
+    { wch: 16 },
+    { wch: 20 },
     { wch: 60 },
   ];
   XLSX.utils.book_append_sheet(wb, wsDev, "Devices");
@@ -139,6 +145,8 @@ export async function exportBidXlsx(
         "Unit Cost",
         "Ext Cost",
         "Labor (hr)",
+        "Labor Override?",
+        "Calculated Labor (hr)",
         "Per-Rack Counts",
       ];
   const rackRows = bid.rackDevices.map((d) =>
@@ -160,6 +168,8 @@ export async function exportBidXlsx(
           d.unitCost,
           d.extCost,
           d.extLabor,
+          d.laborOverridden ? "yes" : "",
+          d.calculatedLabor,
           d.perRackCounts.map((p) => `${p.rackName}: ${p.qty}`).join("; "),
         ],
   );
@@ -173,6 +183,8 @@ export async function exportBidXlsx(
     { wch: 12 },
     { wch: 12 },
     { wch: 10 },
+    { wch: 16 },
+    { wch: 20 },
     { wch: 50 },
   ];
   XLSX.utils.book_append_sheet(wb, wsRack, "Rack Devices");
@@ -189,6 +201,8 @@ export async function exportBidXlsx(
         "Ext Cost",
         "hr/ft",
         "Ext Labor",
+        "Labor Override?",
+        "Calculated Labor",
         "Per-Sheet Footage",
       ];
   const cableRows = bid.cables.map((c) =>
@@ -207,6 +221,8 @@ export async function exportBidXlsx(
           c.extCost,
           c.laborPerFoot,
           c.extLabor,
+          c.laborOverridden ? "yes" : "",
+          c.calculatedLabor,
           c.perSheetFeet
             .map((p) => `${p.sheetName}: ${p.ft.toFixed(0)}'`)
             .join("; "),
@@ -222,6 +238,8 @@ export async function exportBidXlsx(
     { wch: 12 },
     { wch: 8 },
     { wch: 12 },
+    { wch: 16 },
+    { wch: 18 },
     { wch: 60 },
   ];
   XLSX.utils.book_append_sheet(wb, wsCab, "Cables");

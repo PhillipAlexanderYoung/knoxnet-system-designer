@@ -22,12 +22,20 @@ import {
   RotateCcw,
   Undo2,
   Redo2,
+  Lock,
+  LockOpen,
 } from "lucide-react";
 import { useProjectStore, type ToolId } from "../store/projectStore";
 import { cables, cablesById } from "../data/cables";
 import { selectActiveSheet } from "../store/projectStore";
 import { CONDUIT_SIZES, CONDUIT_TYPES } from "../lib/conduit";
 import { isFiberCableId, normalizeFiberStrandCount } from "../lib/fiber";
+import {
+  DEFAULT_TAG_FILL,
+  DEFAULT_TAG_TEXT,
+  TAG_FONT_MIN,
+  resolveTagStyle,
+} from "../lib/tagDefaults";
 
 // Quick-access freehand swatches. Hand-picked to cover the common review
 // colors (red strikethrough, amber highlight, green/blue review marks)
@@ -93,6 +101,14 @@ export function Toolbar() {
   const toggleCoverageVisible = useProjectStore((s) => s.toggleCoverageVisible);
   const runLabelsVisible = useProjectStore((s) => s.runLabelsVisible);
   const toggleRunLabelsVisible = useProjectStore((s) => s.toggleRunLabelsVisible);
+  const cableRunBulkBranch = useProjectStore((s) => s.cableRunBulkBranch);
+  const project = useProjectStore((s) => s.project);
+  const lockMoveHint = useProjectStore((s) => s.lockMoveHint);
+  const clearLockMoveHint = useProjectStore((s) => s.clearLockMoveHint);
+  const setAllDeviceMarkupsLocked = useProjectStore(
+    (s) => s.setAllDeviceMarkupsLocked,
+  );
+  const pushToast = useProjectStore((s) => s.pushToast);
   const canUndo = useProjectStore((s) => s.history.past.length > 0);
   const canRedo = useProjectStore((s) => s.history.future.length > 0);
   const undo = useProjectStore((s) => s.undo);
@@ -102,10 +118,32 @@ export function Toolbar() {
   );
   const activeFiberStrandPresets =
     activeCableId ? cablesById[activeCableId]?.strandCountPresets ?? [] : [];
+  const deviceLockStats = project?.sheets.reduce(
+    (acc, sheet) => {
+      for (const m of sheet.markups) {
+        if (m.kind !== "device") continue;
+        acc.total += 1;
+        if (m.locked) acc.locked += 1;
+      }
+      return acc;
+    },
+    { total: 0, locked: 0 },
+  ) ?? { total: 0, locked: 0 };
+  const allDevicesLocked =
+    deviceLockStats.total > 0 && deviceLockStats.locked === deviceLockStats.total;
 
   useEffect(() => {
     setFiberStrandInput(String(activeFiberStrandCount));
   }, [activeCableId, activeFiberStrandCount]);
+
+  useEffect(() => {
+    if (!lockMoveHint) return;
+    const timer = window.setTimeout(
+      () => clearLockMoveHint(lockMoveHint.pulseKey),
+      2600,
+    );
+    return () => window.clearTimeout(timer);
+  }, [clearLockMoveHint, lockMoveHint]);
 
   return (
     <div className="absolute left-1/2 top-4 -translate-x-1/2 z-20 flex items-center gap-1 panel rounded-xl px-1.5 py-1.5 animate-slide-up">
@@ -215,6 +253,46 @@ export function Toolbar() {
           Run labels
         </span>
       </button>
+      <button
+        onClick={() => {
+          const nextLocked = !allDevicesLocked;
+          const n = setAllDeviceMarkupsLocked(nextLocked);
+          pushToast(
+            n === 0 ? "info" : "success",
+            n === 0
+              ? "No placed devices to update"
+              : `${nextLocked ? "Locked" : "Unlocked"} ${n} device${n === 1 ? "" : "s"}`,
+          );
+        }}
+        data-active={allDevicesLocked}
+        className={`tool-btn group ${
+          lockMoveHint
+            ? "bg-amber-knox/20 text-amber-knox ring-1 ring-amber-knox/60 shadow-glow animate-pulse"
+            : ""
+        }`}
+        title={
+          allDevicesLocked
+            ? "Unlock all devices"
+            : "Lock all devices (cable routes stay editable)"
+        }
+      >
+        {allDevicesLocked ? (
+          <Lock className="w-4 h-4" />
+        ) : (
+          <LockOpen className="w-4 h-4" />
+        )}
+        <span className="absolute -bottom-7 left-1/2 -translate-x-1/2 text-[10px] font-mono uppercase tracking-wider text-ink-300 opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap bg-ink-900 px-1.5 py-0.5 rounded">
+          {allDevicesLocked ? "Unlock devices" : "Lock devices"}
+        </span>
+      </button>
+      {lockMoveHint && (
+        <div
+          key={lockMoveHint.pulseKey}
+          className="absolute top-full left-1/2 mt-2 -translate-x-1/2 rounded-md border border-amber-knox/30 bg-ink-900/95 px-2.5 py-1.5 text-[11px] font-mono text-amber-knox shadow-glass pointer-events-none animate-fade-in whitespace-nowrap"
+        >
+          {lockMoveHint.message}
+        </div>
+      )}
       <TagDefaultsButton />
 
       {activeTool === "cable" && (
@@ -238,7 +316,11 @@ export function Toolbar() {
             />
           )}
           <span className="hidden xl:inline text-[10px] text-ink-400 font-mono whitespace-nowrap">
-            Shift-click devices to branch, or select a Pull Box + cameras and press Route.
+            {cableRunBulkBranch
+              ? cableRunBulkBranch.route
+                ? `${cableRunBulkBranch.targetEndpoints.length} drop${cableRunBulkBranch.targetEndpoints.length === 1 ? "" : "s"} placed - release Shift to finish`
+                : "Multi-device drop: click an origin, then target devices"
+              : "Hold Shift for Multi-device drop; Alt/Ctrl-click branches one device."}
           </span>
           {activeCableId === "conduit" && (
             <>
@@ -428,6 +510,13 @@ function TagDefaultsButton() {
 
   if (!project) return null;
 
+  const tagStyle = resolveTagStyle(project);
+  const brandTags = project.tagDefaults?.brandTags === true;
+  const styleCustomized =
+    brandTags ||
+    project.tagDefaults?.fillColor !== undefined ||
+    project.tagDefaults?.textColor !== undefined;
+
   const onResetActiveSheet = () => {
     if (!sheet) return;
     if (
@@ -473,7 +562,7 @@ function TagDefaultsButton() {
     setOpen(false);
   };
 
-  const isCustom = projectDefault !== undefined;
+  const isCustom = projectDefault !== undefined || styleCustomized;
 
   return (
     <div className="relative" ref={wrapperRef}>
@@ -489,7 +578,7 @@ function TagDefaultsButton() {
         </span>
       </button>
       {open && (
-        <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 panel rounded-lg p-3 z-30 animate-scale-in space-y-2.5">
+        <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-72 panel rounded-lg p-3 z-30 animate-scale-in space-y-2.5">
           <div>
             <div className="flex items-baseline justify-between mb-1">
               <span className="label">Default tag font</span>
@@ -502,7 +591,7 @@ function TagDefaultsButton() {
             </div>
             <input
               type="range"
-              min={6}
+              min={TAG_FONT_MIN}
               max={24}
               step={0.5}
               value={draft}
@@ -525,6 +614,91 @@ function TagDefaultsButton() {
                 className="text-[10px] font-mono text-ink-400 hover:text-amber-knox mt-0.5"
               >
                 clear project default
+              </button>
+            )}
+          </div>
+
+          <div className="h-px bg-white/5" />
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="label">Tag style</div>
+                <p className="text-[10px] text-ink-500 leading-snug">
+                  Applies to device tags, run labels, and racked device schedules.
+                </p>
+              </div>
+              <div
+                className="rounded px-2 py-1 text-[10px] font-mono border"
+                style={{
+                  background: tagStyle.fillColor,
+                  color: tagStyle.textColor,
+                  borderColor: tagStyle.textColor,
+                }}
+              >
+                TAG-01
+              </div>
+            </div>
+            <label className="flex items-center justify-between gap-3 rounded-md border border-white/5 bg-ink-900/30 px-2 py-1.5 text-[11px] text-ink-300">
+              <span>Brand tags</span>
+              <input
+                type="checkbox"
+                checked={brandTags}
+                onChange={(e) =>
+                  setTagDefaults({
+                    brandTags: e.target.checked ? true : undefined,
+                  })
+                }
+                className="accent-amber-knox"
+              />
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="text-[10px] text-ink-400">
+                Fill
+                <input
+                  type="color"
+                  value={tagStyle.fillColor}
+                  disabled={brandTags}
+                  onChange={(e) =>
+                    setTagDefaults({
+                      brandTags: undefined,
+                      fillColor: e.target.value.toUpperCase(),
+                    })
+                  }
+                  className="mt-1 h-8 w-full rounded border border-white/10 bg-ink-800 disabled:opacity-50"
+                  title={brandTags ? "Brand tags use the project accent color" : "Tag fill color"}
+                />
+              </label>
+              <label className="text-[10px] text-ink-400">
+                Text
+                <input
+                  type="color"
+                  value={tagStyle.textColor}
+                  disabled={brandTags}
+                  onChange={(e) =>
+                    setTagDefaults({
+                      brandTags: undefined,
+                      textColor: e.target.value.toUpperCase(),
+                    })
+                  }
+                  className="mt-1 h-8 w-full rounded border border-white/10 bg-ink-800 disabled:opacity-50"
+                  title={brandTags ? "Brand tags auto-pick readable text" : "Tag text color"}
+                />
+              </label>
+            </div>
+            {styleCustomized && (
+              <button
+                onClick={() =>
+                  setTagDefaults({
+                    fillColor: undefined,
+                    textColor: undefined,
+                    brandTags: undefined,
+                  })
+                }
+                className="text-[10px] font-mono text-ink-400 hover:text-amber-knox"
+                title={`Reset to ${DEFAULT_TAG_FILL} tags with ${DEFAULT_TAG_TEXT} text`}
+              >
+                reset tag style
               </button>
             )}
           </div>

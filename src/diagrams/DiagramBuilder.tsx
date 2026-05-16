@@ -11,6 +11,12 @@ import {
 import { devicesById } from "../data/devices";
 import { categoryColor } from "../brand/tokens";
 import {
+  connectionDiagramTags,
+  connectionFromLabel,
+  connectionToLabel,
+  internalEndpointPortLabel,
+} from "../lib/connections";
+import {
   GitBranch,
   LayoutDashboard,
   Plus,
@@ -281,13 +287,19 @@ export function DiagramBuilder() {
 
               {/* Edges first so they pass behind the cards. */}
               {connections.map((c) => {
-                const a = positions[c.fromTag];
-                const b = positions[c.toTag];
+                const diagramTags = connectionDiagramTags(c);
+                const a = positions[diagramTags.fromTag];
+                const b = positions[diagramTags.toTag];
                 if (!a || !b) return null;
                 const ax = a.x + NODE_W / 2;
                 const ay = a.y + NODE_H / 2;
                 const bx = b.x + NODE_W / 2;
                 const by = b.y + NODE_H / 2;
+                const fromPort = connectionFromLabel(c, project);
+                const toPort = c.internalEndpoint
+                  ? internalEndpointPortLabel(c, project)
+                  : connectionToLabel(c, project);
+                const label = [fromPort, toPort].filter(Boolean).join(" -> ");
                 return (
                   <Group key={c.id} listening={true}>
                     <Line
@@ -299,6 +311,20 @@ export function DiagramBuilder() {
                     />
                     {/* Direction indicator at the destination end */}
                     <Circle x={bx} y={by} radius={3} fill="#F4B740" />
+                    {label && (
+                      <Text
+                        x={(ax + bx) / 2 - 48}
+                        y={(ay + by) / 2 - 10}
+                        width={96}
+                        text={label}
+                        align="center"
+                        fontSize={9}
+                        fontFamily="ui-monospace, monospace"
+                        fill="#CBD5E1"
+                        ellipsis
+                        wrap="none"
+                      />
+                    )}
                   </Group>
                 );
               })}

@@ -381,6 +381,7 @@ export const devices: DeviceType[] = [
     category: "network",
     defaultCost: 850,
     laborHours: 2.0,
+    ports: [...switchPorts(24, { poe: "out" }), ...sfpPorts(4, "10G")],
     icon: {
       paths: [
         { d: "M3 8 h18 v8 h-18 z", fill: "currentFill" },

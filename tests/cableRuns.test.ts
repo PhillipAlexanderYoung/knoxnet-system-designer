@@ -9,10 +9,12 @@ import {
   endpointFromMarkup,
   isCableAddressableMarkup,
   nearestCableRunEndpoint,
+  nearestCableRunPoint,
   runLabelLayoutsFor,
   runLabelOffsetFor,
   routeSummariesForDevice,
   runCountFor,
+  servedDevicesSummary,
 } from "../src/lib/cableRuns";
 import {
   approximateConduitFill,
@@ -30,9 +32,11 @@ import { devicesById } from "../src/data/devices";
 import {
   useProjectStore,
   type CableMarkup,
+  type DeviceConnection,
   type DeviceMarkup,
   type Sheet,
 } from "../src/store/projectStore";
+import { nestedSlotPoint } from "../src/lib/nesting";
 
 const device = (overrides: Partial<DeviceMarkup> = {}): DeviceMarkup => ({
   id: "m1",
@@ -81,6 +85,37 @@ describe("cable run helpers", () => {
       y: 20,
       label: "CAM-01 · Lobby",
       deviceTag: "CAM-01",
+    });
+  });
+
+  it("anchors nested device endpoints to the visible bubble", () => {
+    const headEnd = device({
+      id: "he-1",
+      layer: "network",
+      deviceId: "net-headend",
+      category: "network",
+      x: 100,
+      y: 100,
+      tag: "HE-01",
+    });
+    const sw = device({
+      id: "sw-1",
+      layer: "network",
+      deviceId: "net-switch-poe",
+      category: "network",
+      x: 130,
+      y: 100,
+      tag: "SW-01",
+      parentId: "he-1",
+    });
+    const markups = [headEnd, sw];
+    const slot = nestedSlotPoint(markups, headEnd, sw);
+
+    expect(endpointFromMarkup(sw, { markups })).toMatchObject({
+      x: slot.x,
+      y: slot.y,
+      deviceMarkupId: "sw-1",
+      deviceTag: "SW-01",
     });
   });
 
@@ -218,7 +253,7 @@ describe("cable run helpers", () => {
       }),
     );
 
-    const layouts = runLabelLayoutsFor(runs);
+    const layouts = runLabelLayoutsFor(runs, { showRunLabels: true });
     const visible = runs.filter((run) => layouts.get(run.id)?.visible);
 
     expect(visible.length).toBeLessThan(runs.length);
@@ -236,6 +271,7 @@ describe("cable run helpers", () => {
     );
 
     const layouts = runLabelLayoutsFor(runs, {
+      showRunLabels: true,
       selectedIds: new Set(["drop-5"]),
     });
 
@@ -244,18 +280,61 @@ describe("cable run helpers", () => {
     expect(layouts.get("drop-5")?.visible).toBe(true);
   });
 
+  it("defaults run label layouts hidden until the global toggle is enabled", () => {
+    const run = cable({ id: "run-1" });
+
+    expect(runLabelLayoutsFor([run]).get("run-1")?.visible).toBe(false);
+    expect(
+      runLabelLayoutsFor([run], { showRunLabels: true }).get("run-1")?.visible,
+    ).toBe(true);
+  });
+
+  it("defaults new and loaded project run labels off unless explicitly enabled", () => {
+    const store = useProjectStore.getState();
+    const currentProject = store.project!;
+
+    expect(store.runLabelsVisible).toBe(false);
+    expect(currentProject.runLabelsVisible).toBe(false);
+
+    store.loadProject({ ...currentProject, runLabelsVisible: undefined });
+    expect(useProjectStore.getState().runLabelsVisible).toBe(false);
+
+    store.loadProject({ ...currentProject, runLabelsVisible: true });
+    expect(useProjectStore.getState().runLabelsVisible).toBe(true);
+  });
+
   it("honors global and per-run run label visibility toggles", () => {
     const visibleRun = cable({ id: "visible" });
     const hiddenRun = cable({ id: "hidden", showLabel: false });
 
     expect(
-      runLabelLayoutsFor([visibleRun, hiddenRun]).get("hidden")?.visible,
+      runLabelLayoutsFor([visibleRun, hiddenRun], { showRunLabels: true }).get(
+        "hidden",
+      )?.visible,
     ).toBe(false);
     expect(
       runLabelLayoutsFor([visibleRun, hiddenRun], { showRunLabels: false }).get(
         "visible",
       )?.visible,
     ).toBe(false);
+  });
+
+  it("keeps manual and selected run labels hidden when the global toggle is off", () => {
+    const manualRun = cable({
+      id: "manual",
+      labelOffsetX: 18,
+      labelOffsetY: -24,
+      showLabel: true,
+    });
+    const selectedRun = cable({ id: "selected", showLabel: true });
+
+    const layouts = runLabelLayoutsFor([manualRun, selectedRun], {
+      showRunLabels: false,
+      selectedIds: new Set(["selected"]),
+    });
+
+    expect(layouts.get("manual")?.visible).toBe(false);
+    expect(layouts.get("selected")?.visible).toBe(false);
   });
 
   it("builds a routed cable markup through pinned turn points", () => {
@@ -357,6 +436,21 @@ describe("cable run helpers", () => {
       y: 60,
     });
     expect(nearestCableRunEndpoint([cable], { x: 32, y: 20 }, 8)).toBeNull();
+  });
+
+  it("finds a branch anchor on the middle of an existing route", () => {
+    const main = cable({
+      id: "main-route",
+      endpointA: "HE-01",
+      endpointB: "PB-01",
+      points: [10, 20, 80, 20, 80, 90],
+    });
+
+    expect(nearestCableRunPoint(main, { x: 42, y: 23 }, 8)).toMatchObject({
+      x: 42,
+      y: 20,
+    });
+    expect(nearestCableRunPoint(main, { x: 42, y: 45 }, 8)).toBeNull();
   });
 
   it("persists conduit size and type on cable markups", () => {
@@ -551,6 +645,7 @@ describe("cable run helpers", () => {
     expect(cable).toMatchObject({
       kind: "cable",
       cableId: "cat6",
+      physicalLabel: "C-001",
       points: [10, 20, 40, 20, 40, 70, 90, 70],
       endpointA: "SW-01",
       endpointB: "CAM-01",
@@ -777,6 +872,153 @@ describe("cable run helpers", () => {
           m.serviceLoopFt === DEFAULT_SERVICE_LOOP_FT,
       ),
     ).toBe(true);
+    expect(
+      project?.sheets[0].markups
+        .filter((m): m is CableMarkup => m.kind === "cable")
+        .map((m) => m.physicalLabel),
+    ).toEqual(["C-001", "C-002"]);
+  });
+
+  it("places multi-device drops on each target click and finalizes as one undo step", () => {
+    const store = useProjectStore.getState();
+    const headEnd = device({
+      id: "he-1",
+      layer: "network",
+      category: "network",
+      deviceId: "net-headend",
+      x: 10,
+      y: 20,
+      tag: "HE-01",
+    });
+    const switchMarkup = device({
+      id: "sw-1",
+      layer: "network",
+      category: "network",
+      deviceId: "net-switch-poe",
+      x: 90,
+      y: 20,
+      tag: "SW-01",
+    });
+    const pullBox = device({
+      id: "pb-1",
+      deviceId: "site-pullbox",
+      category: "site",
+      x: 50,
+      y: 50,
+      tag: "PB-01",
+    });
+    store.addMarkup(headEnd);
+    store.addMarkup(switchMarkup);
+    store.addMarkup(pullBox);
+    store.clearHistory();
+
+    store.beginCableRunBulkBranch([endpointFromMarkup(headEnd)!]);
+    expect(store.toggleCableRunBulkBranchTarget(endpointFromMarkup(switchMarkup)!)).toBe(1);
+    expect(
+      useProjectStore.getState().project!.sheets[0].markups.filter((m) => m.kind === "cable"),
+    ).toHaveLength(1);
+    expect(store.toggleCableRunBulkBranchTarget(endpointFromMarkup(pullBox)!)).toBe(2);
+    expect(
+      useProjectStore.getState().project!.sheets[0].markups.filter((m) => m.kind === "cable"),
+    ).toHaveLength(2);
+    expect(useProjectStore.getState().history.past).toHaveLength(0);
+    expect(store.commitCableRunBulkBranch()).toBe(2);
+
+    const state = useProjectStore.getState();
+    const cables = state.project!.sheets[0].markups.filter(
+      (m): m is CableMarkup => m.kind === "cable",
+    );
+    expect(cables.map((m) => m.endpointB)).toEqual(["SW-01", "PB-01"]);
+    expect(state.cableRunBulkBranch).toBeNull();
+    expect(state.history.past).toHaveLength(1);
+    state.undo();
+    expect(
+      useProjectStore.getState().project!.sheets[0].markups.filter((m) => m.kind === "cable"),
+    ).toHaveLength(0);
+  });
+
+  it("bulk-branches from a pull box route point with drop defaults", () => {
+    const store = useProjectStore.getState();
+    const pullBox = device({
+      id: "pb-1",
+      deviceId: "site-pullbox",
+      category: "site",
+      x: 30,
+      y: 30,
+      tag: "PB-01",
+    });
+    const camera = device({ id: "cam-1", x: 100, y: 60, tag: "CAM-01" });
+    store.beginCableRunBulkBranch([endpointFromMarkup(pullBox)!]);
+    expect(store.toggleCableRunBulkBranchTarget(endpointFromMarkup(camera)!)).toBe(1);
+
+    const run = useProjectStore.getState().project!.sheets[0].markups.find(
+      (m): m is CableMarkup => m.kind === "cable",
+    )!;
+    expect(run).toMatchObject({
+      endpointA: "PB-01",
+      endpointB: "CAM-01",
+      routeStyle: "archedDrop",
+      serviceLoopFt: DEFAULT_SERVICE_LOOP_FT,
+    });
+    expect(store.commitCableRunBulkBranch()).toBe(1);
+    expect(useProjectStore.getState().cableRunBulkBranch).toBeNull();
+  });
+
+  it("places a multi-device drop from the current draft route point immediately", () => {
+    const store = useProjectStore.getState();
+    store.placeCableRunEndpoint({ x: 10, y: 20, label: "HE-01", deviceTag: "HE-01" });
+    store.placeCableRunEndpoint({ x: 60, y: 20 });
+    store.beginCableRunBulkBranch(undefined);
+    expect(store.toggleCableRunBulkBranchTarget({
+      x: 100,
+      y: 50,
+      label: "CAM-01",
+      deviceTag: "CAM-01",
+    })).toBe(1);
+
+    expect(useProjectStore.getState().cableRunDraft?.points).toMatchObject([
+      { x: 10, y: 20 },
+      { x: 60, y: 20 },
+    ]);
+    expect(useProjectStore.getState().project?.sheets[0].markups[0]).toMatchObject({
+      kind: "cable",
+      points: [10, 20, 60, 20, 100, 50],
+    });
+    expect(store.commitCableRunBulkBranch()).toBe(1);
+  });
+
+  it("records served devices on a main route as middle-route targets are clicked", () => {
+    const store = useProjectStore.getState();
+    const main = buildCableRunMarkup("main-route", "cat6", [
+      { x: 10, y: 20, label: "HE-01", deviceTag: "HE-01" },
+      { x: 90, y: 20, label: "PB-01", deviceTag: "PB-01" },
+    ]);
+    store.addMarkup(main);
+    const anchor = nearestCableRunPoint(main, { x: 50, y: 20 })!;
+    store.beginCableRunBulkBranch([anchor], "main-route");
+    expect(
+      store.toggleCableRunBulkBranchTarget({
+        x: 80,
+        y: 60,
+        label: "CAM-01",
+        deviceTag: "CAM-01",
+      }),
+    ).toBe(1);
+    expect(
+      store.toggleCableRunBulkBranchTarget({
+        x: 90,
+        y: 70,
+        label: "CAM-02",
+        deviceTag: "CAM-02",
+      }),
+    ).toBe(2);
+
+    const updatedMain = useProjectStore.getState().project!.sheets[0].markups.find(
+      (m): m is CableMarkup => m.kind === "cable" && m.id === "main-route",
+    )!;
+    expect(updatedMain.servedDevices).toEqual(["CAM-01", "CAM-02"]);
+    expect(servedDevicesSummary(updatedMain)).toBe("CAM-01, CAM-02");
+    expect(store.commitCableRunBulkBranch()).toBe(2);
   });
 
   it("keeps many pull-box camera drops attached across repeated moves", () => {
@@ -1078,6 +1320,190 @@ describe("cable run helpers", () => {
     );
   });
 
+  it("re-anchors a container cable endpoint to an assigned nested device", () => {
+    const store = useProjectStore.getState();
+    const headEnd = device({
+      id: "he-1",
+      layer: "network",
+      category: "network",
+      deviceId: "net-headend",
+      x: 10,
+      y: 10,
+      tag: "HE-01",
+    });
+    const bridge = device({
+      id: "br-1",
+      layer: "network",
+      category: "network",
+      deviceId: "net-wifi-bridge",
+      x: 100,
+      y: 10,
+      tag: "BR-01",
+    });
+    const sw = device({
+      id: "sw-1",
+      layer: "network",
+      category: "network",
+      deviceId: "net-switch-poe",
+      x: 24,
+      y: 10,
+      tag: "SW-01",
+      parentId: "he-1",
+    });
+    const run = buildCableRunMarkup("run-1", "cat6", [
+      endpointFromMarkup(headEnd)!,
+      endpointFromMarkup(bridge)!,
+    ]);
+    const conn: DeviceConnection = {
+      id: "link-1",
+      fromTag: "HE-01",
+      toTag: "BR-01",
+      medium: "cat6",
+      cableMarkupId: "run-1",
+    };
+    store.addMarkup(headEnd);
+    store.addMarkup(bridge);
+    store.addMarkup(sw);
+    store.addMarkup(run);
+    store.addConnection(conn);
+
+    store.updateConnection("link-1", {
+      internalEndpoint: {
+        containerId: "he-1",
+        containerTag: "HE-01",
+        deviceId: "sw-1",
+        deviceTag: "SW-01",
+      },
+    });
+
+    const assignedProject = useProjectStore.getState().project!;
+    const assignedRun = assignedProject.sheets[0].markups.find(
+      (m) => m.id === "run-1",
+    ) as CableMarkup;
+    const assignedConn = assignedProject.connections?.find((c) => c.id === "link-1");
+    expect(assignedRun.points).toEqual([28, 10, 100, 10]);
+    expect(assignedRun.pointAttachments?.[0]).toMatchObject({
+      deviceMarkupId: "sw-1",
+      deviceTag: "SW-01",
+    });
+    expect(assignedConn?.internalEndpoint).toMatchObject({
+      containerId: "he-1",
+      deviceId: "sw-1",
+      portId: "port-1",
+      port: "Port 1",
+    });
+
+    store.updateConnection("link-1", { internalEndpoint: undefined });
+
+    const clearedRun = useProjectStore
+      .getState()
+      .project!.sheets[0].markups.find((m) => m.id === "run-1") as CableMarkup;
+    expect(clearedRun.points).toEqual([10, 10, 100, 10]);
+    expect(clearedRun.pointAttachments?.[0]).toMatchObject({
+      deviceMarkupId: "he-1",
+      deviceTag: "HE-01",
+    });
+  });
+
+  it("auto-assigns container runs when a ported device is nested", () => {
+    const store = useProjectStore.getState();
+    const headEnd = device({
+      id: "he-1",
+      layer: "network",
+      category: "network",
+      deviceId: "net-headend",
+      x: 10,
+      y: 10,
+      tag: "HE-01",
+    });
+    const bridge1 = device({
+      id: "br-1",
+      layer: "network",
+      category: "network",
+      deviceId: "net-wifi-bridge",
+      x: 100,
+      y: 10,
+      tag: "BR-01",
+    });
+    const bridge2 = device({
+      id: "br-2",
+      layer: "network",
+      category: "network",
+      deviceId: "net-wifi-bridge",
+      x: 100,
+      y: 40,
+      tag: "BR-02",
+    });
+    const sw = device({
+      id: "sw-1",
+      layer: "network",
+      category: "network",
+      deviceId: "net-switch-poe",
+      x: 60,
+      y: 60,
+      tag: "SW-01",
+    });
+    const run1 = buildCableRunMarkup("run-1", "cat6", [
+      endpointFromMarkup(headEnd)!,
+      endpointFromMarkup(bridge1)!,
+    ]);
+    const run2 = buildCableRunMarkup("run-2", "cat6", [
+      endpointFromMarkup(headEnd)!,
+      endpointFromMarkup(bridge2)!,
+    ]);
+    store.addMarkup(headEnd);
+    store.addMarkup(bridge1);
+    store.addMarkup(bridge2);
+    store.addMarkup(sw);
+    store.addMarkup(run1);
+    store.addMarkup(run2);
+    store.addConnection({
+      id: "link-1",
+      fromTag: "HE-01",
+      toTag: "BR-01",
+      medium: "cat6",
+      cableMarkupId: "run-1",
+    });
+    store.addConnection({
+      id: "link-2",
+      fromTag: "HE-01",
+      toTag: "BR-02",
+      medium: "cat6",
+      cableMarkupId: "run-2",
+    });
+
+    store.moveDeviceMarkup("sw-1", 10, 10);
+
+    const project = useProjectStore.getState().project!;
+    const assigned = project.connections ?? [];
+    expect(assigned.find((c) => c.id === "link-1")?.internalEndpoint).toMatchObject({
+      deviceId: "sw-1",
+      portId: "port-1",
+    });
+    expect(assigned.find((c) => c.id === "link-2")?.internalEndpoint).toMatchObject({
+      deviceId: "sw-1",
+      portId: "port-2",
+    });
+    const movedRun = project.sheets[0].markups.find((m) => m.id === "run-1") as CableMarkup;
+    expect(movedRun.pointAttachments?.[0]).toMatchObject({ deviceMarkupId: "sw-1" });
+
+    store.updateConnection("link-1", {
+      internalEndpoint: {
+        containerId: "he-1",
+        containerTag: "HE-01",
+        deviceId: "sw-1",
+        deviceTag: "SW-01",
+        portId: "port-5",
+      },
+    });
+    store.autoAssignContainerInternalConnections("he-1");
+    expect(
+      useProjectStore
+        .getState()
+        .project!.connections?.find((c) => c.id === "link-1")?.internalEndpoint,
+    ).toMatchObject({ portId: "port-5", port: "Port 5" });
+  });
+
   it("moves intermediate pull-box waypoints while preserving manual turns", () => {
     const store = useProjectStore.getState();
     const headEnd = device({
@@ -1237,9 +1663,10 @@ describe("cable run helpers", () => {
       y: 100,
       tag: "CAM-01",
     });
+    const initialMarkups = [headEnd, switchMarkup, camera];
     const run = buildCableRunMarkup("nested-run", "cat6", [
-      endpointFromMarkup(switchMarkup)!,
-      endpointFromMarkup(camera)!,
+      endpointFromMarkup(switchMarkup, { markups: initialMarkups })!,
+      endpointFromMarkup(camera, { markups: initialMarkups })!,
     ]);
     store.addMarkup(headEnd);
     store.addMarkup(switchMarkup);
@@ -1251,7 +1678,18 @@ describe("cable run helpers", () => {
     const movedRun = useProjectStore
       .getState()
       .project!.sheets[0].markups.find((m) => m.id === "nested-run") as CableMarkup;
-    expect(movedRun.points).toEqual([170, 150, 200, 100]);
+    const movedHeadEnd = useProjectStore
+      .getState()
+      .project!.sheets[0].markups.find((m) => m.id === "he-1") as DeviceMarkup;
+    const movedSwitch = useProjectStore
+      .getState()
+      .project!.sheets[0].markups.find((m) => m.id === "sw-1") as DeviceMarkup;
+    const movedSlot = nestedSlotPoint(
+      useProjectStore.getState().project!.sheets[0].markups,
+      movedHeadEnd,
+      movedSwitch,
+    );
+    expect(movedRun.points).toEqual([movedSlot.x, movedSlot.y, 200, 100]);
   });
 
   it("snaps route infrastructure to a nearby run endpoint and can disconnect it", () => {

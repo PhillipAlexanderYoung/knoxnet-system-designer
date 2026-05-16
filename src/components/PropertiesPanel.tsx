@@ -20,6 +20,8 @@ import { devicesById, effectiveDevicePorts } from "../data/devices";
 import {
   effectivePortsForTag,
   findPort,
+  isInternalPortInUse,
+  nextAvailableInternalPort,
 } from "../lib/connections";
 import { clampTagOffset, resolveTagFontSize } from "../lib/tagDefaults";
 import { cables, cablesById } from "../data/cables";
@@ -44,19 +46,14 @@ import {
   routeSummariesForDevice,
   runCountFor,
 } from "../lib/cableRuns";
-import {
-  canNestDeviceIn,
-  deviceDisplayName,
-  isContainerDevice,
-  isNestableDevice,
-  isRackDevice,
-  nestedChildren,
-  nestedConnectionSummary,
-  nestedScheduleTitle,
-} from "../lib/nesting";
 import { formatFeetDecimal } from "../lib/geometry";
 import { categoryColor, categoryLabel } from "../brand/tokens";
 import { resolveCoverage, type EffectiveCoverage } from "../lib/coverage";
+import {
+  validateProject,
+  validationIssuesForEntity,
+  type ValidationIssue,
+} from "../lib/validation";
 import {
   LENS_PRESETS,
   SENSOR_FORMATS,
@@ -80,6 +77,7 @@ import {
   Plug,
   Plus,
   X,
+  AlertTriangle,
 } from "lucide-react";
 
 export function PropertiesPanel() {
@@ -102,6 +100,14 @@ export function PropertiesPanel() {
 
   const single = selectedMarkups.length === 1 ? selectedMarkups[0] : null;
   const multi = selectedMarkups.length > 1 ? selectedMarkups : null;
+  const projectIssues = useMemo(
+    () => (project ? validateProject(project) : []),
+    [project],
+  );
+  const singleIssues = useMemo(
+    () => (project && single ? validationIssuesForEntity(project, single.id) : []),
+    [project, single],
+  );
 
   const onDuplicate = () => {
     if (!sheet) return;
@@ -156,10 +162,13 @@ export function PropertiesPanel() {
 
       <div className="flex-1 overflow-y-auto p-3 space-y-3">
         {single ? (
-          <SingleMarkupEditor
-            markup={single}
-            onChange={(patch) => updateMarkup(single.id, patch as any)}
-          />
+          <>
+            <ValidationWarnings issues={singleIssues} />
+            <SingleMarkupEditor
+              markup={single}
+              onChange={(patch) => updateMarkup(single.id, patch as any)}
+            />
+          </>
         ) : multi ? (
           <MultiMarkupEditor
             markups={multi}
@@ -262,6 +271,7 @@ export function PropertiesPanel() {
                     blank to suppress.
                   </div>
                 </Field>
+                <ProjectValidationSummary issues={projectIssues} />
               </div>
             )}
 
@@ -298,6 +308,56 @@ function Field({
         {hint && <div className="text-[10px] text-ink-500 font-mono">{hint}</div>}
       </div>
       {children}
+    </div>
+  );
+}
+
+function ProjectValidationSummary({ issues }: { issues: ValidationIssue[] }) {
+  if (issues.length === 0) {
+    return (
+      <div className="rounded-md border border-signal-green/20 bg-signal-green/10 px-2 py-1.5 text-[11px] text-signal-green">
+        No duplicate labels, ports, IPs, or rack/container names found.
+      </div>
+    );
+  }
+  return (
+    <ValidationWarnings
+      issues={issues}
+      title={`${issues.length} validation warning${issues.length === 1 ? "" : "s"}`}
+      limit={5}
+    />
+  );
+}
+
+function ValidationWarnings({
+  issues,
+  title = "Validation warnings",
+  limit = 3,
+}: {
+  issues: ValidationIssue[];
+  title?: string;
+  limit?: number;
+}) {
+  if (issues.length === 0) return null;
+  const shown = issues.slice(0, limit);
+  return (
+    <div className="rounded-md border border-amber-knox/30 bg-amber-knox/10 px-2 py-2 text-[11px] text-ink-200 space-y-1.5">
+      <div className="flex items-center gap-1.5 font-mono uppercase tracking-wider text-amber-knox text-[10px]">
+        <AlertTriangle className="w-3.5 h-3.5" />
+        <span>{title}</span>
+      </div>
+      <ul className="space-y-1">
+        {shown.map((issue) => (
+          <li key={issue.id} className="leading-snug text-ink-300">
+            {issue.message}
+          </li>
+        ))}
+      </ul>
+      {issues.length > shown.length && (
+        <div className="text-[10px] text-ink-500">
+          + {issues.length - shown.length} more warning{issues.length - shown.length === 1 ? "" : "s"}
+        </div>
+      )}
     </div>
   );
 }
@@ -490,9 +550,7 @@ function DeviceProps({
   const disconnectRouteInfrastructure = useProjectStore(
     (s) => s.disconnectRouteInfrastructure,
   );
-  const updateMarkup = useProjectStore((s) => s.updateMarkup);
   const sheet = useProjectStore(selectActiveSheet);
-  const connections = useProjectStore((s) => s.project?.connections ?? []);
   if (!dev) return null;
   const color = markup.colorOverride ?? categoryColor[dev.category] ?? "#94A0B8";
   const size = markup.size ?? 28;
@@ -500,20 +558,6 @@ function DeviceProps({
   const isRouteInfra = isRouteInfrastructureMarkup(markup);
   const routeSummaries =
     isRouteInfra && sheet ? routeSummariesForDevice(sheet, markup) : [];
-  const containers =
-    sheet?.markups.filter(
-      (m): m is DeviceMarkup =>
-        m.kind === "device" && canNestDeviceIn(markup, m, sheet.markups),
-    ) ?? [];
-  const parent =
-    markup.parentId && sheet
-      ? sheet.markups.find(
-          (m): m is DeviceMarkup => m.kind === "device" && m.id === markup.parentId,
-        )
-      : null;
-  const children = sheet ? nestedChildren(sheet.markups, markup.id) : [];
-  const canBeNested = sheet ? isNestableDevice(markup) : false;
-  const canContain = sheet ? isContainerDevice(markup) : false;
 
   return (
     <>
@@ -558,121 +602,6 @@ function DeviceProps({
           placeholder="e.g. Bandshell East"
         />
       </Field>
-
-      {(canBeNested || canContain || parent || children.length > 0) && (
-        <div className="rounded-md border border-white/5 bg-ink-900/35 px-2 py-2 space-y-2">
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-[10px] font-mono uppercase tracking-wider text-amber-knox">
-              Nested Devices
-            </div>
-            {parent && (
-              <button
-                onClick={() => onChange({ parentId: undefined })}
-                className="text-[10px] font-mono text-ink-400 hover:text-ink-50"
-              >
-                Unnest
-              </button>
-            )}
-          </div>
-
-          {canBeNested && (
-            <Field label="Contained In" hint="logical">
-              <select
-                className="input"
-                value={markup.parentId ?? ""}
-                onChange={(e) =>
-                  onChange({ parentId: e.target.value || undefined })
-                }
-              >
-                <option value="">None</option>
-                {containers.map((container) => (
-                  <option key={container.id} value={container.id}>
-                    {deviceDisplayName(container)}
-                  </option>
-                ))}
-              </select>
-              <p className="text-[10px] text-ink-500 leading-snug mt-1">
-                Drag this device onto a container to show it as a persistent
-                Nested Device bubble. Only the Rack device creates a Rack entry.
-              </p>
-            </Field>
-          )}
-
-          {canContain && (
-            <div className="space-y-2">
-              <Field label="Schedule Name" hint="optional">
-                <input
-                  className="input"
-                  value={markup.nestedScheduleName ?? ""}
-                  onChange={(e) =>
-                    onChange({ nestedScheduleName: e.target.value || undefined })
-                  }
-                  placeholder={`${markup.tag || "HE-01"} Schedule`}
-                />
-              </Field>
-              <label className="flex items-start gap-2 text-[11px] text-ink-300">
-                <input
-                  type="checkbox"
-                  checked={!!markup.showNestedDevices}
-                  onChange={(e) =>
-                    onChange({ showNestedDevices: e.target.checked || undefined })
-                  }
-                  className="mt-0.5 accent-amber-knox"
-                />
-                <span>
-                  Show compact Nested Devices schedule tag
-                  <span className="block text-[10px] text-ink-500">
-                    Nested devices always draw as attached bubbles; this adds
-                    a small area schedule beside the container.
-                  </span>
-                </span>
-              </label>
-              {isRackDevice(markup) && (
-                <p className="text-[10px] text-ink-500 leading-snug">
-                  Nested rack-mount devices are linked to the Rack system when
-                  possible.
-                </p>
-              )}
-            </div>
-          )}
-
-          {children.length > 0 ? (
-            <div className="space-y-1">
-              <div className="text-[10px] text-ink-500">
-                {nestedScheduleTitle(markup)}
-              </div>
-              {children.slice(0, 6).map((child) => (
-                <div
-                  key={child.id}
-                  className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-0.5 text-[11px]"
-                >
-                  <span className="font-mono text-ink-300 truncate">
-                    {deviceDisplayName(child)}
-                  </span>
-                  <button
-                    onClick={() => updateMarkup(child.id, { parentId: undefined } as any)}
-                    className="text-[10px] text-ink-500 hover:text-ink-100"
-                  >
-                    Unnest
-                  </button>
-                  <span className="col-span-2 text-[10px] text-ink-500 truncate">
-                    {nestedConnectionSummary(connections, child.tag) || "No connections yet"}
-                  </span>
-                </div>
-              ))}
-              {children.length > 6 && (
-                <div className="text-[10px] text-ink-500">
-                  + {children.length - 6} more nested devices
-                </div>
-              )}
-            </div>
-          ) : canContain ? (
-            <p className="text-[10px] text-ink-500 leading-snug">
-              No devices are currently nested in this container.
-            </p>
-          ) : null}
-        </div>
-      )}
 
       {isRouteInfra && markup.attachedRunEndpoint && (
         <div className="rounded-md border border-white/5 bg-ink-900/35 px-2 py-2 space-y-1.5">
@@ -1350,48 +1279,6 @@ function CableProps({
           Use one drawn path to represent parallel runs on the same route.
         </div>
       </Field>
-      <Field label="Physical Label" hint="field label">
-        <input
-          className="input"
-          value={markup.physicalLabel ?? ""}
-          placeholder="e.g. CBL-001 / FOC-12"
-          onChange={(e) =>
-            onChange({ physicalLabel: e.target.value || undefined })
-          }
-        />
-        <div className="text-[10px] text-ink-500 mt-0.5">
-          Real-world label to print or apply in the field; separate from the drawing tag.
-        </div>
-      </Field>
-      <div className="rounded-md border border-white/5 bg-ink-900/35 px-2 py-2 space-y-1.5">
-        <div className="flex items-center justify-between gap-2">
-          <div>
-            <div className="text-[10px] font-mono uppercase tracking-wider text-amber-knox">
-              Run Label
-            </div>
-            <p className="text-[10px] text-ink-500 leading-snug">
-              Auto labels de-clutter dense pull-box drops; dragged labels stay visible.
-            </p>
-          </div>
-          <button
-            onClick={() =>
-              onChange({ showLabel: markup.showLabel === false ? undefined : false })
-            }
-            className={`text-[10px] font-mono px-2 py-1 rounded border transition-colors ${
-              markup.showLabel === false
-                ? "text-ink-300 border-white/10 hover:border-white/20"
-                : "bg-amber-knox/10 border-amber-knox/40 text-amber-knox"
-            }`}
-            title={
-              markup.showLabel === false
-                ? "Show this run label"
-                : "Hide this run label"
-            }
-          >
-            {markup.showLabel === false ? "Hidden" : "Visible"}
-          </button>
-        </div>
-      </div>
       <Field label="Connector / Termination">
         <input
           className="input"
@@ -1556,8 +1443,6 @@ function MultiMarkupEditor({
 }) {
   const devices = markups.filter((m) => m.kind === "device") as DeviceMarkup[];
   const allDevices = devices.length === markups.length && devices.length > 0;
-  const cableRuns = markups.filter((m) => m.kind === "cable") as CableMarkup[];
-  const allCableRuns = cableRuns.length === markups.length && cableRuns.length > 0;
   const layers = useProjectStore.getState().layers;
 
   // Compute "common" defaults for sliders
@@ -1570,8 +1455,6 @@ function MultiMarkupEditor({
       <div className="text-[11px] text-ink-400 pb-1">
         {allDevices
           ? `${markups.length} devices selected. Edits below apply to all.`
-          : allCableRuns
-            ? `${markups.length} cable/conduit/fiber runs selected. Edits below apply to all.`
           : `Mixed selection (${devices.length} devices, ${markups.length - devices.length} other). Common edits only.`}
       </div>
 
@@ -1608,21 +1491,6 @@ function MultiMarkupEditor({
             />
           </Field>
         </>
-      )}
-
-      {allCableRuns && (
-        <Field label="Physical Label (all)" hint="field label">
-          <input
-            className="input"
-            placeholder="e.g. CBL-001 / FOC-12"
-            onChange={(e) =>
-              onApply({ physicalLabel: e.target.value || undefined })
-            }
-          />
-          <div className="text-[10px] text-ink-500 mt-0.5">
-            Applies the same real-world label to every selected run.
-          </div>
-        </Field>
       )}
 
       <Field label="Layer (all)">

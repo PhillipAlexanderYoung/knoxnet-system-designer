@@ -60,8 +60,9 @@ Typical workflow:
 5. **Commission**: open the Properties panel and fill in IP / VLAN /
    MAC / RTSP / model / serial / mount. Connections pick from a real
    port dropdown (ETH0, RS-485, SFP+, …) instead of free text.
-6. **Run cable** (`C`): choose a cable type, click vertices, and
-   double-click to finish. The length pill updates live.
+6. **Run cable** (`C`): choose a cable type, route through points,
+   pull boxes, racks, or devices, and branch drops with Multi-device
+   drop. Length, service loop, labels, and connections update live.
 7. **Annotate** with text, callouts, revision clouds, dimensions,
    arrows, rectangles, polygons, and freehand notes.
 8. **Reports**: switch to the **Reports** tab in the left rail. Run a
@@ -73,7 +74,7 @@ Typical workflow:
 9. **Diagrams**: switch to the **Diagrams** view in the topbar to see
    every device + connection as a draggable signal-flow diagram.
 10. **Open the Bid panel** (`Cmd/Ctrl+B`) to review material, labor,
-    overhead, tax, margin, and grand total.
+    local labor-hour overrides, overhead, tax, margin, and grand total.
 11. **Tune rates** in Settings (`Cmd/Ctrl+,`).
 12. **Export** a branded markup PDF, bid PDF, editable XLSX workbook,
     any saved custom report, or a portable `.knoxnet` project file.
@@ -223,13 +224,16 @@ layout, and the project + branding settings.
 | **Structured ports** | Every device exposes real physical ports (ETH0, RS-485, SFP+, audio in/out, …) with PoE direction + speed. Connections pick a port from a dropdown instead of free text. |
 | **Per-instance commissioning** | Full IP / VLAN / MAC / RTSP / NVR channel / switch port / asset tag / firmware on every placed device. Travels in the `.knoxnet` file. |
 | Auto-numbering | Devices get tags like CAM-01, AP-03, NID-02 automatically per-sheet. |
-| Cable types | Cat6, Cat6A, Cat6 plenum, single/multi-mode fiber, RG6 coax, low-voltage, EMT conduit. Configurable slack %. |
+| Cable and conduit routing | Cat6, Cat6A, plenum, single/multi-mode fiber, RG6 coax, low-voltage, and common conduit types. Route through devices, pull boxes, junction boxes, racks, or raw points; add service loops, custom fiber strand counts, physical labels, and Multi-device drop branches. |
 | Markup tools | Select, pan, calibrate, device, cable, dimension, text, callout, revision cloud, rectangle, polygon, arrow, freehand. All vector. |
 | Layers | Auto-layered by category: show, hide, or lock independently. |
-| Live bid engine | BOM + cable schedule + labor + overhead + tax + margin + grand total. Updates as you draw. |
+| Racked devices | Rack switches, routers, patch panels, and similar gear into racks, head ends, cabinets, or enclosures. Racked devices stay cable-addressable and can produce compact area schedules. |
+| Validation checks | Non-blocking warnings catch duplicate cable labels, device names, ports, IPs, rack names, and other common field identifiers. |
+| Live bid engine | BOM + cable schedule + labor + overhead + tax + margin + grand total. Updates as you draw, with per-bid labor hour overrides that do not change catalog defaults. |
 | **Custom report builder** | View-builder UX: pick a scope (devices / cables / connections / racks / ports), filter, pick columns, group, sort, generate as **PDF, XLSX, CSV, JSON, Markdown, or HTML** in one click. 10 starter templates included (Camera Commissioning Sheet, AP IP Plan, Cable Schedule, Switch Port Map, VLAN Report, Door Schedule, Rack Loadout, Port Inventory, Network Master, All Devices by Manufacturer). |
 | **Signal-flow diagrams** | Every device + connection rendered as a draggable node-link diagram. One graph, multiple diagrams per project. |
 | **Adjustable tag layout** | Drag any device tag pill to reposition it; size, font, and offset are per-device and persist through export. Tags pinned by the user are honored; un-pinned tags auto-route around devices and other tags in the PDF export. |
+| Undo, viewport, and interaction polish | Large undo/redo history, per-sheet zoom/pan restore, lock hints, hover affordances, and subtle grab hints keep editing recoverable and easier to understand. |
 | Branded PDF export | Cover sheet + every sheet with a custom title block, legend, and bid summary appended. Markups embedded as vectors. |
 | Bid exports | Branded PDF (customer or full-detail) and an XLSX workbook (Summary / Devices / Cables / Sheets / Warnings). |
 | Local persistence | IndexedDB stores everything. Refresh, close the tab, your projects come back. |

@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Circle, Group, Line, Text, Rect, Arrow, Path, Label, Tag } from "react-konva";
 import {
   useProjectStore,
@@ -6,7 +6,6 @@ import {
   type Sheet,
   type Markup,
   type DeviceMarkup,
-  type DeviceConnection,
 } from "../store/projectStore";
 import { devicesById } from "../data/devices";
 import { cablesById } from "../data/cables";
@@ -39,31 +38,42 @@ import {
 } from "../lib/cableRuns";
 import { compactConduitLabel } from "../lib/conduit";
 import { fiberCompactLabel } from "../lib/fiber";
-import { sortMarkupsForRender } from "../lib/markupOrdering";
+import {
+  sortDeviceTagsForRender,
+  sortMarkupsForRender,
+} from "../lib/markupOrdering";
 import {
   isContainerDevice,
+  isNestableDevice,
+  nearestContainerForDevice,
   nestedBubbleLabel,
   nestedBubbleLabelColor,
+  nestedBubbleHitRadius,
   nestedBubblePoint,
   nestedBubbleSize,
-  nestedChildren,
-  type NestedScheduleItem,
-  nestedScheduleItems,
-  nestedScheduleTitle,
 } from "../lib/nesting";
 
 type TagSettings = { tagDefaults?: { fontSize?: number } } | null;
+type HoverHint = { text: string; x: number; y: number; targetKey: string; fading?: boolean };
+type ShowHoverHint = (
+  hint: HoverHint,
+  options?: { duringDrag?: boolean; immediate?: boolean },
+) => void;
+type MarkupRenderPart = "body" | "tag";
+
+const HOVER_SHADOW_OPACITY = 0.32;
+const HOVER_HINT_DELAY_MS = 120;
+const HOVER_HINT_VISIBLE_MS = 3000;
+const HOVER_HINT_FADE_MS = 350;
 
 export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }) {
-  const connections = useProjectStore((s) => s.project?.connections ?? []);
   const tagDefaults = useProjectStore((s) => s.project?.tagDefaults);
   const layers = useProjectStore((s) => s.layers);
   const selected = useProjectStore((s) => s.selectedMarkupIds);
   const setSelected = useProjectStore((s) => s.setSelected);
   const updateMarkup = useProjectStore((s) => s.updateMarkup);
   const moveDeviceMarkup = useProjectStore((s) => s.moveDeviceMarkup);
-  const beginHistoryTransaction = useProjectStore((s) => s.beginHistoryTransaction);
-  const endHistoryTransaction = useProjectStore((s) => s.endHistoryTransaction);
+  const notifyLockedDeviceMoveAttempt = useProjectStore((s) => s.notifyLockedDeviceMoveAttempt);
   const deleteMarkup = useProjectStore((s) => s.deleteMarkup);
   const activeTool = useProjectStore((s) => s.activeTool);
   const setActiveTool = useProjectStore((s) => s.setActiveTool);
@@ -73,6 +83,78 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
   const freehandErasing = useProjectStore((s) => s.freehandErasing);
   const coverageVisible = useProjectStore((s) => s.coverageVisible);
   const runLabelsVisible = useProjectStore((s) => s.runLabelsVisible);
+  const [hoveredMarkupId, setHoveredMarkupId] = useState<string | null>(null);
+  const [hint, setHint] = useState<HoverHint | null>(null);
+  const hintDelayTimerRef = useRef<number | null>(null);
+  const hintFadeTimerRef = useRef<number | null>(null);
+  const hintHideTimerRef = useRef<number | null>(null);
+  const activeHintTargetRef = useRef<string | null>(null);
+
+  const clearHoverHintTimers = useCallback(() => {
+    if (hintDelayTimerRef.current !== null) {
+      window.clearTimeout(hintDelayTimerRef.current);
+      hintDelayTimerRef.current = null;
+    }
+    if (hintFadeTimerRef.current !== null) {
+      window.clearTimeout(hintFadeTimerRef.current);
+      hintFadeTimerRef.current = null;
+    }
+    if (hintHideTimerRef.current !== null) {
+      window.clearTimeout(hintHideTimerRef.current);
+      hintHideTimerRef.current = null;
+    }
+  }, []);
+
+  const hideHoverHint = useCallback(() => {
+    clearHoverHintTimers();
+    activeHintTargetRef.current = null;
+    setHint(null);
+  }, [clearHoverHintTimers]);
+
+  const showHoverHint = useCallback(
+    (next: HoverHint, options?: { duringDrag?: boolean; immediate?: boolean }) => {
+      if (
+        activeHintTargetRef.current === next.targetKey &&
+        !options?.duringDrag &&
+        !options?.immediate
+      ) {
+        return;
+      }
+
+      clearHoverHintTimers();
+      activeHintTargetRef.current = next.targetKey;
+
+      const reveal = () => {
+        if (activeHintTargetRef.current !== next.targetKey) return;
+        setHint({ ...next, fading: false });
+        hintFadeTimerRef.current = window.setTimeout(() => {
+          if (activeHintTargetRef.current !== next.targetKey) return;
+          setHint((current) =>
+            current?.targetKey === next.targetKey ? { ...current, fading: true } : current,
+          );
+          hintFadeTimerRef.current = null;
+        }, Math.max(0, HOVER_HINT_VISIBLE_MS - HOVER_HINT_FADE_MS));
+        hintHideTimerRef.current = window.setTimeout(() => {
+          if (activeHintTargetRef.current !== next.targetKey) return;
+          setHint(null);
+          hintHideTimerRef.current = null;
+        }, HOVER_HINT_VISIBLE_MS);
+      };
+
+      if (options?.immediate) {
+        reveal();
+        return;
+      }
+
+      hintDelayTimerRef.current = window.setTimeout(() => {
+        reveal();
+        hintDelayTimerRef.current = null;
+      }, HOVER_HINT_DELAY_MS);
+    },
+    [clearHoverHintTimers],
+  );
+
+  useEffect(() => () => clearHoverHintTimers(), [clearHoverHintTimers]);
 
   const tagSettings = useMemo<TagSettings>(
     () => (tagDefaults ? { tagDefaults } : null),
@@ -94,6 +176,16 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
   const orderedMarkups = useMemo(
     () => sortMarkupsForRender(sheet.markups, layers),
     [layers, sheet.markups],
+  );
+  const raisedMarkups = useMemo(() => {
+    if (!hoveredMarkupId) return orderedMarkups;
+    const hovered = orderedMarkups.find((m) => m.id === hoveredMarkupId);
+    if (!hovered) return orderedMarkups;
+    return orderedMarkups.filter((m) => m.id !== hoveredMarkupId).concat(hovered);
+  }, [hoveredMarkupId, orderedMarkups]);
+  const orderedDeviceTags = useMemo(
+    () => sortDeviceTagsForRender(raisedMarkups, layers),
+    [layers, raisedMarkups],
   );
   const isLayerOff = useCallback(
     (id: string) => layerById[id] && !layerById[id].visible,
@@ -135,6 +227,7 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
         }
         const endpoint = endpointFromMarkup(m, {
           asRouteWaypoint: routeThroughModifier,
+          markups: sheet.markups,
         });
         if (endpoint) {
           if (branchModifier) branchCableRunEndpoint(endpoint);
@@ -165,23 +258,6 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
     ],
   );
 
-  const handleRunLabelClick = useCallback(
-    (m: Markup, e: any) => {
-      e.cancelBubble = true;
-      if (e.evt) e.evt.stopPropagation?.();
-      if (activeTool !== "select") setActiveTool("select");
-      if (e.evt?.shiftKey) {
-        const s = new Set(selected);
-        if (s.has(m.id)) s.delete(m.id);
-        else s.add(m.id);
-        setSelected(Array.from(s));
-      } else {
-        setSelected([m.id]);
-      }
-    },
-    [activeTool, selected, setActiveTool, setSelected],
-  );
-
   return (
     <Group>
       {coverageVisible && sheet.calibration && (
@@ -189,13 +265,7 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
           {sheet.markups.map((m) => {
             if (m.hidden || m.kind !== "device") return null;
             if (isLayerOff(m.layer)) return null;
-            const parent = m.parentId
-              ? sheet.markups.find(
-                  (candidate): candidate is DeviceMarkup =>
-                    candidate.kind === "device" && candidate.id === m.parentId,
-                )
-              : null;
-            if (parent) return null;
+            if (m.parentId) return null;
             return (
               <CoverageOverlay
                 key={`cov-${m.id}`}
@@ -208,36 +278,88 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
         </Group>
       )}
 
-      {orderedMarkups.map((m) => {
+      {raisedMarkups.map((m) => {
         if (m.hidden) return null;
         if (isLayerOff(m.layer)) return null;
         const isSel = selectedSet.has(m.id);
+        const parent =
+          m.kind === "device" && m.parentId
+            ? sheet.markups.find(
+                (candidate): candidate is DeviceMarkup =>
+                  candidate.kind === "device" && candidate.id === m.parentId,
+              )
+            : null;
         const draggable =
-          activeTool === "select" && !m.locked && !isLayerLocked(m.layer);
+          activeTool === "select" &&
+          !m.locked &&
+          !isLayerLocked(m.layer) &&
+          !parent?.locked &&
+          !(parent && isLayerLocked(parent.layer));
         return (
           <MarkupNode
             key={m.id}
             markup={m}
             calibration={sheet.calibration}
-            sheetMarkups={
-              m.kind === "device" || (m.kind === "cable" && isSel && draggable)
-                ? sheet.markups
-                : undefined
-            }
-            connections={connections}
+            sheetMarkups={sheet.markups}
             selected={isSel}
             draggable={draggable}
             onMarkupClick={handleMarkupClick}
-            onRunLabelClick={handleRunLabelClick}
             updateMarkup={updateMarkup}
             moveDeviceMarkup={moveDeviceMarkup}
-            beginHistoryTransaction={beginHistoryTransaction}
-            endHistoryTransaction={endHistoryTransaction}
+            notifyLockedDeviceMoveAttempt={notifyLockedDeviceMoveAttempt}
             tagSettings={tagSettings}
             runLabelLayout={m.kind === "cable" ? runLabelLayouts.get(m.id) : undefined}
+            renderPart="body"
+            onHoverChange={setHoveredMarkupId}
+            showHoverHint={showHoverHint}
+            hideHoverHint={hideHoverHint}
           />
         );
       })}
+      <Group>
+        {orderedDeviceTags.map((m) => {
+          if (m.hidden) return null;
+          if (isLayerOff(m.layer)) return null;
+          const isSel = selectedSet.has(m.id);
+          const parent =
+            m.kind === "device" && m.parentId
+              ? sheet.markups.find(
+                  (candidate): candidate is DeviceMarkup =>
+                    candidate.kind === "device" && candidate.id === m.parentId,
+                )
+              : null;
+          const draggable =
+            activeTool === "select" &&
+            !m.locked &&
+            !isLayerLocked(m.layer) &&
+            !parent?.locked &&
+            !(parent && isLayerLocked(parent.layer));
+          return (
+            <MarkupNode
+              key={`${m.id}-tag`}
+              markup={m}
+              calibration={sheet.calibration}
+              sheetMarkups={sheet.markups}
+              selected={isSel}
+              draggable={draggable}
+              onMarkupClick={handleMarkupClick}
+              updateMarkup={updateMarkup}
+              moveDeviceMarkup={moveDeviceMarkup}
+              notifyLockedDeviceMoveAttempt={notifyLockedDeviceMoveAttempt}
+              tagSettings={tagSettings}
+              renderPart="tag"
+              onHoverChange={setHoveredMarkupId}
+              showHoverHint={showHoverHint}
+              hideHoverHint={hideHoverHint}
+            />
+          );
+        })}
+      </Group>
+      {hint && (
+        <Group listening={false}>
+          <HoverHintLabel hint={hint} />
+        </Group>
+      )}
     </Group>
   );
 });
@@ -273,149 +395,116 @@ const MarkupNode = memo(function MarkupNode({
   markup,
   calibration,
   sheetMarkups,
-  connections,
   selected,
   draggable,
   onMarkupClick,
-  onRunLabelClick,
   updateMarkup,
   moveDeviceMarkup,
-  beginHistoryTransaction,
-  endHistoryTransaction,
+  notifyLockedDeviceMoveAttempt,
   tagSettings,
   runLabelLayout,
+  renderPart,
+  onHoverChange,
+  showHoverHint,
+  hideHoverHint,
 }: {
   markup: Markup;
   calibration: Calibration | undefined;
   sheetMarkups?: Markup[];
-  connections: DeviceConnection[];
   selected: boolean;
   draggable: boolean;
   onMarkupClick: (m: Markup, e: any) => void;
-  onRunLabelClick: (m: Markup, e: any) => void;
   updateMarkup: ReturnType<typeof useProjectStore.getState>["updateMarkup"];
   moveDeviceMarkup: ReturnType<typeof useProjectStore.getState>["moveDeviceMarkup"];
-  beginHistoryTransaction: ReturnType<typeof useProjectStore.getState>["beginHistoryTransaction"];
-  endHistoryTransaction: ReturnType<typeof useProjectStore.getState>["endHistoryTransaction"];
+  notifyLockedDeviceMoveAttempt: ReturnType<typeof useProjectStore.getState>["notifyLockedDeviceMoveAttempt"];
   tagSettings: TagSettings;
   runLabelLayout?: RunLabelLayout;
+  renderPart: MarkupRenderPart;
+  onHoverChange: (id: string | null) => void;
+  showHoverHint: ShowHoverHint;
+  hideHoverHint: () => void;
 }) {
+  const [hovered, setHovered] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const handleClick = useCallback(
     (e: any) => onMarkupClick(markup, e),
     [markup, onMarkupClick],
   );
-  const handleRunLabelClick = useCallback(
-    (e: any) => onRunLabelClick(markup, e),
-    [markup, onRunLabelClick],
+  const handleMouseEnter = useCallback(
+    (e: any) => {
+      if (dragging) return;
+      setHovered(true);
+      onHoverChange(markup.id);
+      const directlyDraggable =
+        draggable &&
+        (markup.kind === "device" || markup.kind === "text" || markup.kind === "rect");
+      setStageCursor(e, directlyDraggable ? "grab" : "pointer");
+    },
+    [dragging, draggable, markup.id, markup.kind, onHoverChange],
   );
+  const handleMouseLeave = useCallback((e: any) => {
+    setHovered(false);
+    onHoverChange(null);
+    hideHoverHint();
+    setStageCursor(e, "");
+  }, [hideHoverHint, onHoverChange]);
+  const clearHoverForDrag = useCallback((e: any) => {
+    setDragging(true);
+    setHovered(false);
+    onHoverChange(null);
+    hideHoverHint();
+    setStageCursor(e, "grabbing");
+  }, [hideHoverHint, onHoverChange]);
+  const finishHoverDrag = useCallback((e: any) => {
+    setDragging(false);
+    setHovered(false);
+    hideHoverHint();
+    setStageCursor(e, "");
+  }, [hideHoverHint]);
 
   return (
-    <Group>
+    <Group onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
       {renderMarkup(
         markup,
         calibration,
         sheetMarkups ?? [],
-        connections,
         selected,
         draggable,
+        hovered && !dragging,
         handleClick,
-        handleRunLabelClick,
+        clearHoverForDrag,
+        finishHoverDrag,
+        showHoverHint,
+        hideHoverHint,
         updateMarkup,
         moveDeviceMarkup,
-        beginHistoryTransaction,
-        endHistoryTransaction,
+        notifyLockedDeviceMoveAttempt,
         tagSettings,
         runLabelLayout,
+        renderPart,
       )}
     </Group>
   );
 });
 
-function NestedScheduleTag({
-  parent,
-  items,
-  overflow,
-  color,
-  x,
-  y,
-}: {
-  parent: DeviceMarkup;
-  items: NestedScheduleItem[];
-  overflow: number;
-  color: string;
-  x: number;
-  y: number;
-}) {
-  const title = nestedScheduleTitle(parent);
-  const rows = items.map((item) =>
-    item.connectionSummary
-      ? `${item.deviceName} -> ${item.connectionSummary}`
-      : item.deviceName,
-  );
-  if (overflow > 0) rows.push(`+ ${overflow} more`);
-  const fontSize = 7.25;
-  const longest = [title, ...rows].reduce((max, line) => Math.max(max, line.length), 0);
-  const width = Math.max(98, Math.min(220, longest * fontSize * 0.58 + 16));
-  const height = 18 + rows.length * (fontSize + 3) + 6;
-  return (
-    <Group x={x} y={y} listening={false}>
-      <Rect
-        width={width}
-        height={height}
-        fill="rgba(11,18,32,0.94)"
-        stroke={color}
-        strokeWidth={0.65}
-        cornerRadius={4}
-        shadowColor="rgba(0,0,0,0.35)"
-        shadowBlur={5}
-        shadowOpacity={0.55}
-        perfectDrawEnabled={false}
-      />
-      <Text
-        text={title}
-        x={7}
-        y={5}
-        width={width - 14}
-        fontFamily="JetBrains Mono"
-        fontStyle="700"
-        fontSize={fontSize}
-        fill="#F4B740"
-        ellipsis
-        perfectDrawEnabled={false}
-      />
-      {rows.map((line, i) => (
-        <Text
-          key={`${parent.id}-nested-row-${i}`}
-          text={line}
-          x={7}
-          y={18 + i * (fontSize + 3)}
-          width={width - 14}
-          fontFamily="JetBrains Mono"
-          fontSize={fontSize}
-          fill="#D9E2F2"
-          ellipsis
-          perfectDrawEnabled={false}
-        />
-      ))}
-    </Group>
-  );
-}
-
 function renderMarkup(
   m: Markup,
   calibration: Calibration | undefined,
   sheetMarkups: Markup[],
-  connections: DeviceConnection[],
   selected: boolean,
   draggable: boolean,
+  hovered: boolean,
   onClick: (e: any) => void,
-  onRunLabelClick: (e: any) => void,
+  clearHoverForDrag: (e: any) => void,
+  finishHoverDrag: (e: any) => void,
+  showHoverHint: ShowHoverHint,
+  hideHoverHint: () => void,
   updateMarkup: ReturnType<typeof useProjectStore.getState>["updateMarkup"],
   moveDeviceMarkup: ReturnType<typeof useProjectStore.getState>["moveDeviceMarkup"],
-  beginHistoryTransaction: ReturnType<typeof useProjectStore.getState>["beginHistoryTransaction"],
-  endHistoryTransaction: ReturnType<typeof useProjectStore.getState>["endHistoryTransaction"],
+  notifyLockedDeviceMoveAttempt: ReturnType<typeof useProjectStore.getState>["notifyLockedDeviceMoveAttempt"],
   tagSettings: TagSettings,
   runLabelLayout?: RunLabelLayout,
+  renderPart: MarkupRenderPart = "body",
 ) {
   switch (m.kind) {
     case "device": {
@@ -423,27 +512,15 @@ function renderMarkup(
       if (!dev) return null;
       const size = m.size ?? 28;
       const color = m.colorOverride ?? categoryColor[dev.category] ?? "#94A0B8";
-      const labelText = m.labelOverride ? `${m.tag} · ${m.labelOverride}` : m.tag;
-      const parent = m.parentId
+      const hoverActive = hovered && !selected;
+      const nestedParent = m.parentId
         ? sheetMarkups.find(
             (candidate): candidate is DeviceMarkup =>
               candidate.kind === "device" && candidate.id === m.parentId,
           )
         : null;
-      const compactNested = !!parent;
-      const bubblePoint =
-        compactNested && parent ? nestedBubblePoint(sheetMarkups, parent, m) : null;
-      const bubbleSize = compactNested ? nestedBubbleSize(m) : size;
-      const bubbleLabel = compactNested ? nestedBubbleLabel(m) : "";
-      const bubbleLabelFontSize =
-        bubbleLabel.length > 0
-          ? Math.max(4, Math.min(5.4, (bubbleSize - 2) / (bubbleLabel.length * 0.55)))
-          : 4.5;
-      const bubbleLabelColor = compactNested ? nestedBubbleLabelColor("#0B1220") : "#FFFFFF";
-      const containerScheduleItems =
-        m.showNestedDevices && isContainerDevice(m)
-          ? nestedScheduleItems(sheetMarkups, m.id, connections, 6)
-          : [];
+      if (nestedParent && renderPart === "tag") return null;
+      const labelText = m.labelOverride ? `${m.tag} · ${m.labelOverride}` : m.tag;
       const cov = resolveCoverage(m);
       const showAimHandle =
         selected &&
@@ -497,41 +574,79 @@ function renderMarkup(
             y: Math.max(pillTop, Math.min(m.y, pillTop + pillH)),
           }
         : null;
-      if (compactNested) {
-        const bx = bubblePoint?.x ?? m.x;
-        const by = bubblePoint?.y ?? m.y;
+      const deviceMoveHint = m.parentId
+        ? "move racked device"
+        : sheetMarkups.some(
+            (candidate) => candidate.kind === "device" && candidate.parentId === m.id,
+          )
+          ? "move racked devices"
+          : isContainerDevice(m)
+            ? "rack devices here"
+            : isNestableDevice(m)
+              ? "rack device"
+              : "move device";
+      if (nestedParent && renderPart === "body") {
+        const bubble = nestedBubblePoint(sheetMarkups, nestedParent, m);
+        const slotSize = nestedBubbleSize(m);
+        const bubbleSize = Math.max(8, slotSize - 2);
+        const radius = bubbleSize / 2;
+        const hitRadius = nestedBubbleHitRadius(m);
+        const bubbleText = nestedBubbleLabel(m);
+        const textColor = nestedBubbleLabelColor(color);
+        const nestedDragLocked = !!(m.locked || nestedParent.locked);
         return (
-          <Group>
-            <DeviceIconNode
-              device={dev}
-              x={bx}
-              y={by}
-              size={bubbleSize}
-              color={color}
-              rotation={m.rotation ?? 0}
-              selected={selected}
-              onClick={onClick}
-              onMouseDown={onClick}
-              draggable={draggable}
-              onDragStart={() => beginHistoryTransaction()}
-              onDragMove={(e) => moveDeviceMarkup(m.id, e.target.x(), e.target.y())}
-              onDragEnd={(e) => {
-                moveDeviceMarkup(m.id, e.target.x(), e.target.y());
-                endHistoryTransaction();
-              }}
+          <Group
+            x={bubble.x}
+            y={bubble.y}
+            draggable={draggable}
+            dragDistance={2}
+            onClick={onClick}
+            onTap={onClick}
+            onMouseDown={(e) => {
+              onClick(e);
+              if (nestedDragLocked) notifyLockedDeviceMoveAttempt();
+            }}
+            onMouseEnter={(e) => {
+              showHoverHint({
+                text: draggable ? "move racked device" : "select racked device",
+                x: bubble.x + radius + 4,
+                y: bubble.y - radius - 5,
+                targetKey: `${m.id}:racked-bubble`,
+              });
+              setStageCursor(e, draggable ? "grab" : "pointer");
+            }}
+            onMouseLeave={(e) => {
+              hideHoverHint();
+              setStageCursor(e, "");
+            }}
+            onDragStart={clearHoverForDrag}
+            onDragEnd={(e) => {
+              moveDeviceMarkup(m.id, e.target.x(), e.target.y());
+              finishHoverDrag(e);
+            }}
+          >
+            <Circle radius={hitRadius} fill="rgba(11,18,32,0.01)" />
+            <Circle
+              radius={radius}
+              fill={color}
+              stroke={selected ? "#F4B740" : "#0B1220"}
+              strokeWidth={selected ? 1 : 0.65}
+              shadowColor={hoverActive ? color : undefined}
+              shadowBlur={hoverActive ? 3 : 0}
+              shadowOpacity={hoverActive ? 0.22 : 0}
+              perfectDrawEnabled={false}
             />
             <Text
-              text={bubbleLabel}
-              x={bx - bubbleSize / 2}
-              y={by - bubbleSize / 2}
+              x={-radius}
+              y={-Math.min(3, radius * 0.58)}
               width={bubbleSize}
-              height={bubbleSize}
-              align="center"
-              verticalAlign="middle"
+              text={bubbleText}
               fontFamily="JetBrains Mono"
               fontStyle="700"
-              fontSize={bubbleLabelFontSize}
-              fill={bubbleLabelColor}
+              fontSize={Math.max(4.5, Math.min(5.5, bubbleSize * 0.46))}
+              fill={textColor}
+              align="center"
+              wrap="none"
               listening={false}
               perfectDrawEnabled={false}
             />
@@ -540,201 +655,260 @@ function renderMarkup(
       }
       return (
         <Group>
-          <DeviceIconNode
-            device={dev}
-            x={m.x}
-            y={m.y}
-            size={size}
-            color={color}
-            rotation={m.rotation ?? 0}
-            selected={selected}
-            onClick={onClick}
-            onMouseDown={onClick}
-            draggable={draggable}
-            onDragStart={() => beginHistoryTransaction()}
-            onDragMove={(e) => moveDeviceMarkup(m.id, e.target.x(), e.target.y())}
-            onDragEnd={(e) => {
-              moveDeviceMarkup(m.id, e.target.x(), e.target.y());
-              endHistoryTransaction();
-            }}
-          />
-          {containerScheduleItems.length > 0 && (
-            <NestedScheduleTag
-              parent={m}
-              items={containerScheduleItems}
-              color={color}
-              x={m.x + size / 2 + 10}
-              y={m.y + size / 2 + 10}
-              overflow={nestedChildren(sheetMarkups, m.id).length - containerScheduleItems.length}
-            />
-          )}
-          {showAimHandle && aimHandle && (
+          {renderPart === "body" && (
             <>
-              <Line
-                points={[
-                  m.x + ((aimHandle.x - m.x) / aimHandle.distance) * (size / 2 + 3),
-                  m.y + ((aimHandle.y - m.y) / aimHandle.distance) * (size / 2 + 3),
-                  aimHandle.x,
-                  aimHandle.y,
-                ]}
-                stroke="#F4B740"
-                strokeWidth={0.65}
-                opacity={0.55}
-                dash={[3, 3]}
-                listening={false}
+              <DeviceIconNode
+                device={dev}
+                x={m.x}
+                y={m.y}
+                size={size}
+                color={color}
+                rotation={m.rotation ?? 0}
+                selected={selected}
+                hovered={hovered}
+                onClick={onClick}
+                onMouseDown={onClick}
+                onMouseEnter={(e) => {
+                  showHoverHint({
+                    text: draggable ? deviceMoveHint : "select device",
+                    x: m.x + size / 2 + 7,
+                    y: m.y - size / 2 - 5,
+                    targetKey: `${m.id}:device`,
+                  });
+                  setStageCursor(e, draggable ? "grab" : "pointer");
+                }}
+                onMouseLeave={(e) => {
+                  hideHoverHint();
+                  setStageCursor(e, "");
+                }}
+                draggable={draggable}
+                onDragStart={clearHoverForDrag}
+                onDragMove={(e) => {
+                  if (!isNestableDevice(m)) return;
+                  const container = nearestContainerForDevice(sheetMarkups, m, {
+                    x: e.target.x(),
+                    y: e.target.y(),
+                  });
+                  if (!container) {
+                    hideHoverHint();
+                    return;
+                  }
+                  showHoverHint(
+                    {
+                      text: "drop to rack",
+                      x: e.target.x() + size / 2 + 7,
+                      y: e.target.y() - size / 2 - 5,
+                      targetKey: `${m.id}:drop-rack`,
+                    },
+                    { duringDrag: true, immediate: true },
+                  );
+                }}
+                onDragEnd={(e) => {
+                  moveDeviceMarkup(m.id, e.target.x(), e.target.y());
+                  finishHoverDrag(e);
+                }}
               />
-              <Group
-                x={aimHandle.x}
-                y={aimHandle.y}
-                draggable
-                dragDistance={2}
-                onMouseEnter={(e) => setStageCursor(e, "grab")}
-                onMouseLeave={(e) => setStageCursor(e, "")}
-                onMouseDown={(e) => {
-                  onClick(e);
-                  e.cancelBubble = true;
-                  e.evt?.stopPropagation?.();
+              {showAimHandle && aimHandle && (
+                <>
+                  <Line
+                    points={[
+                      m.x + ((aimHandle.x - m.x) / aimHandle.distance) * (size / 2 + 3),
+                      m.y + ((aimHandle.y - m.y) / aimHandle.distance) * (size / 2 + 3),
+                      aimHandle.x,
+                      aimHandle.y,
+                    ]}
+                    stroke="#F4B740"
+                    strokeWidth={0.65}
+                    opacity={0.55}
+                    dash={[3, 3]}
+                    listening={false}
+                  />
+                  <Group
+                    x={aimHandle.x}
+                    y={aimHandle.y}
+                    draggable
+                    dragDistance={2}
+                    onMouseEnter={(e) => {
+                      showHoverHint({
+                        text: "aim camera",
+                        x: aimHandle.x + 7,
+                        y: aimHandle.y - 16,
+                        targetKey: `${m.id}:aim-handle`,
+                      });
+                      setStageCursor(e, "grab");
+                    }}
+                    onMouseLeave={(e) => {
+                      hideHoverHint();
+                      setStageCursor(e, "");
+                    }}
+                    onMouseDown={(e) => {
+                      onClick(e);
+                      e.cancelBubble = true;
+                      e.evt?.stopPropagation?.();
+                    }}
+                    onDragStart={(e) => {
+                      e.cancelBubble = true;
+                      clearHoverForDrag(e);
+                    }}
+                    onDragMove={(e) => {
+                      e.cancelBubble = true;
+                      updateMarkup(m.id, {
+                        rotation: Math.round(
+                          rotationDegFromPoint(
+                            { x: m.x, y: m.y },
+                            { x: e.target.x(), y: e.target.y() },
+                          ),
+                        ),
+                      } as Partial<DeviceMarkup>);
+                    }}
+                    onDragEnd={(e) => {
+                      e.cancelBubble = true;
+                      updateMarkup(m.id, {
+                        rotation: Math.round(
+                          rotationDegFromPoint(
+                            { x: m.x, y: m.y },
+                            { x: e.target.x(), y: e.target.y() },
+                          ),
+                        ),
+                      } as Partial<DeviceMarkup>);
+                      finishHoverDrag(e);
+                    }}
+                  >
+                    <Circle
+                      radius={8}
+                      fill="rgba(244,183,64,0.01)"
+                    />
+                    <Circle
+                      radius={1.1}
+                      fill="#F4B740"
+                      stroke="#FFE7A8"
+                      strokeWidth={hovered ? 0.55 : 0.35}
+                      shadowColor="#F4B740"
+                      shadowBlur={hovered ? 5 : 2.5}
+                      shadowOpacity={hovered ? 0.55 : 0.35}
+                      listening={false}
+                    />
+                    <Circle
+                      x={-0.35}
+                      y={-0.4}
+                      radius={0.35}
+                      fill="#FFFFFF"
+                      opacity={0.85}
+                      listening={false}
+                    />
+                  </Group>
+                </>
+              )}
+            </>
+          )}
+          {renderPart === "tag" && (
+            <>
+              {wantLeader && leaderStart && leaderEnd && (
+                <>
+                  <Line
+                    points={[leaderStart.x, leaderStart.y, leaderEnd.x, leaderEnd.y]}
+                    stroke={color}
+                    strokeWidth={0.6}
+                    opacity={0.55}
+                    dash={[3, 2]}
+                    listening={false}
+                  />
+                  {/* Filled dot at the device end signals "user-pinned" so
+                      the tag still reads as part of the device at a glance. */}
+                  <Circle
+                    x={leaderStart.x}
+                    y={leaderStart.y}
+                    radius={1.2}
+                    fill={color}
+                    opacity={0.85}
+                    listening={false}
+                  />
+                </>
+              )}
+              <Label
+                x={pillLeft}
+                y={pillTop}
+                draggable={draggable}
+                // Distinguish click-then-mouse-out from intentional drag.
+                // Without a threshold Konva starts dragging on mousedown and
+                // the pill follows the cursor as the user moves toward the
+                // Properties panel. 8 stage pixels matches the standard
+                // browser click/drag boundary and keeps the tag "stuck" on
+                // a click-only gesture so the user can read it without
+                // accidentally repositioning it.
+                dragDistance={8}
+                onClick={onClick}
+                onTap={onClick}
+                onMouseDown={onClick}
+                onMouseEnter={(e) => {
+                  showHoverHint({
+                    text: draggable ? "move tag" : "select tag",
+                    x: pillLeft + pillW + 5,
+                    y: pillTop - 4,
+                    targetKey: `${m.id}:device-tag`,
+                  });
+                  setStageCursor(e, draggable ? "grab" : "pointer");
+                }}
+                onMouseLeave={(e) => {
+                  hideHoverHint();
+                  setStageCursor(e, "");
                 }}
                 onDragStart={(e) => {
                   e.cancelBubble = true;
-                  beginHistoryTransaction();
-                  setStageCursor(e, "grabbing");
+                  clearHoverForDrag(e);
                 }}
+                // Soft clamp during drag — keeps the pill visually tied to
+                // the device by preventing the user from accidentally
+                // stranding it across the sheet. Distance scales with
+                // device size so big icons get correspondingly more reach.
                 onDragMove={(e) => {
-                  e.cancelBubble = true;
-                  updateMarkup(m.id, {
-                    rotation: Math.round(
-                      rotationDegFromPoint(
-                        { x: m.x, y: m.y },
-                        { x: e.target.x(), y: e.target.y() },
-                      ),
-                    ),
-                  } as Partial<DeviceMarkup>);
+                  const dx = e.target.x() - m.x;
+                  const dy = e.target.y() - m.y;
+                  const max = maxTagOffsetDistance(size);
+                  const d = Math.hypot(dx, dy);
+                  if (d > max) {
+                    const k = max / d;
+                    e.target.x(m.x + dx * k);
+                    e.target.y(m.y + dy * k);
+                  }
                 }}
                 onDragEnd={(e) => {
-                  e.cancelBubble = true;
-                  setStageCursor(e, "grab");
+                  const dx = e.target.x() - m.x;
+                  const dy = e.target.y() - m.y;
+                  const clamped = clampTagOffset(dx, dy, size);
                   updateMarkup(m.id, {
-                    rotation: Math.round(
-                      rotationDegFromPoint(
-                        { x: m.x, y: m.y },
-                        { x: e.target.x(), y: e.target.y() },
-                      ),
-                    ),
+                    tagOffsetX: clamped.dx,
+                    tagOffsetY: clamped.dy,
                   } as Partial<DeviceMarkup>);
-                  endHistoryTransaction();
+                  finishHoverDrag(e);
                 }}
               >
-                <Circle
-                  radius={8}
-                  fill="rgba(244,183,64,0.01)"
+                <Tag
+                  fill="#0B1220"
+                  stroke={color}
+                  strokeWidth={hoverActive ? 1 : 0.75}
+                  cornerRadius={3}
+                  shadowColor={hoverActive ? color : "rgba(0,0,0,0.4)"}
+                  shadowBlur={hoverActive ? 7 : 4}
+                  shadowOpacity={hoverActive ? HOVER_SHADOW_OPACITY : 0.6}
+                  // Skip Konva's double-draw stroke pass — keeps the pill
+                  // edge crisp at any zoom without the soft-aliased halo
+                  // that the default redraw introduces.
+                  perfectDrawEnabled={false}
+                  strokeScaleEnabled={false}
                 />
-                <Circle
-                  radius={1.1}
-                  fill="#F4B740"
-                  stroke="#FFE7A8"
-                  strokeWidth={0.35}
-                  shadowColor="#F4B740"
-                  shadowBlur={2.5}
-                  listening={false}
+                <Text
+                  text={labelText}
+                  fontFamily="JetBrains Mono"
+                  fontStyle="500"
+                  fontSize={tagFontSize}
+                  fill="#F5F7FA"
+                  padding={padding}
+                  perfectDrawEnabled={false}
                 />
-                <Circle
-                  x={-0.35}
-                  y={-0.4}
-                  radius={0.35}
-                  fill="#FFFFFF"
-                  opacity={0.85}
-                  listening={false}
-                />
-              </Group>
+              </Label>
             </>
           )}
-          {wantLeader && leaderStart && leaderEnd && (
-            <>
-              <Line
-                points={[leaderStart.x, leaderStart.y, leaderEnd.x, leaderEnd.y]}
-                stroke={color}
-                strokeWidth={0.6}
-                opacity={0.55}
-                dash={[3, 2]}
-                listening={false}
-              />
-              {/* Filled dot at the device end signals "user-pinned" so
-                  the tag still reads as part of the device at a glance. */}
-              <Circle
-                x={leaderStart.x}
-                y={leaderStart.y}
-                radius={1.2}
-                fill={color}
-                opacity={0.85}
-                listening={false}
-              />
-            </>
-          )}
-          <Label
-            x={pillLeft}
-            y={pillTop}
-            draggable={draggable}
-            // Distinguish click-then-mouse-out from intentional drag.
-            // Without a threshold Konva starts dragging on mousedown and
-            // the pill follows the cursor as the user moves toward the
-            // Properties panel. 8 stage pixels matches the standard
-            // browser click/drag boundary and keeps the tag "stuck" on
-            // a click-only gesture so the user can read it without
-            // accidentally repositioning it.
-            dragDistance={8}
-            onClick={onClick}
-            onTap={onClick}
-            onMouseDown={onClick}
-            // Soft clamp during drag — keeps the pill visually tied to
-            // the device by preventing the user from accidentally
-            // stranding it across the sheet. Distance scales with
-            // device size so big icons get correspondingly more reach.
-            onDragMove={(e) => {
-              const dx = e.target.x() - m.x;
-              const dy = e.target.y() - m.y;
-              const max = maxTagOffsetDistance(size);
-              const d = Math.hypot(dx, dy);
-              if (d > max) {
-                const k = max / d;
-                e.target.x(m.x + dx * k);
-                e.target.y(m.y + dy * k);
-              }
-            }}
-            onDragEnd={(e) => {
-              const dx = e.target.x() - m.x;
-              const dy = e.target.y() - m.y;
-              const clamped = clampTagOffset(dx, dy, size);
-              updateMarkup(m.id, {
-                tagOffsetX: clamped.dx,
-                tagOffsetY: clamped.dy,
-              } as Partial<DeviceMarkup>);
-            }}
-          >
-            <Tag
-              fill="#0B1220"
-              stroke={color}
-              strokeWidth={0.75}
-              cornerRadius={3}
-              shadowColor="rgba(0,0,0,0.4)"
-              shadowBlur={4}
-              shadowOpacity={0.6}
-              // Skip Konva's double-draw stroke pass — keeps the pill
-              // edge crisp at any zoom without the soft-aliased halo
-              // that the default redraw introduces.
-              perfectDrawEnabled={false}
-              strokeScaleEnabled={false}
-            />
-            <Text
-              text={labelText}
-              fontFamily="JetBrains Mono"
-              fontStyle="500"
-              fontSize={tagFontSize}
-              fill="#F5F7FA"
-              padding={padding}
-              perfectDrawEnabled={false}
-            />
-          </Label>
         </Group>
       );
     }
@@ -742,6 +916,7 @@ function renderMarkup(
     case "cable": {
       const cab = cablesById[m.cableId];
       if (!cab) return null;
+      const hoverActive = hovered && !selected;
       const lenPts = polylineLengthPts(m.points);
       const ftRaw = ptsToFeet(lenPts, calibration);
       const mid = midpointOfPolyline(m.points);
@@ -772,8 +947,8 @@ function renderMarkup(
         220,
         Math.max(44, longestLabelLine * labelFontSize * 0.58 + 12),
       );
+      const showRunLabel = runLabelLayout?.visible === true;
       const labelOffset = runLabelLayout?.offset ?? { dx: 0, dy: -11 };
-      const labelVisible = runLabelLayout?.visible === true;
       const arched = m.routeStyle === "archedDrop" && m.points.length === 4;
       return (
         <Group>
@@ -781,63 +956,106 @@ function renderMarkup(
             <Path
               data={archedCablePath(m.points)}
               stroke={cab.color}
-              strokeWidth={(cab.thickness ?? 2) + (selected ? 1 : 0)}
+              strokeWidth={(cab.thickness ?? 2) + (selected ? 1 : hoverActive ? 0.6 : 0)}
               dash={cab.dash}
               lineCap="round"
               lineJoin="round"
-              shadowColor={selected ? cab.color : undefined}
-              shadowBlur={selected ? 8 : 0}
+              shadowColor={selected || hoverActive ? cab.color : undefined}
+              shadowBlur={selected ? 8 : hoverActive ? 6 : 0}
+              shadowOpacity={selected ? 0.55 : hoverActive ? HOVER_SHADOW_OPACITY : 0}
               onClick={onClick}
               onMouseDown={onClick}
+              onMouseEnter={(e) => {
+                if (mid) {
+                  showHoverHint({
+                    text: selected && draggable ? "move run label or joints" : "select cable run",
+                    x: mid.x + 7,
+                    y: mid.y - 16,
+                    targetKey: `${m.id}:cable`,
+                  });
+                }
+                setStageCursor(e, "pointer");
+              }}
+              onMouseLeave={(e) => {
+                hideHoverHint();
+                setStageCursor(e, "");
+              }}
               hitStrokeWidth={Math.max(10, (cab.thickness ?? 2) + 6)}
             />
           ) : (
             <Line
               points={m.points}
               stroke={cab.color}
-              strokeWidth={(cab.thickness ?? 2) + (selected ? 1 : 0)}
+              strokeWidth={(cab.thickness ?? 2) + (selected ? 1 : hoverActive ? 0.6 : 0)}
               dash={cab.dash}
               lineCap="round"
               lineJoin="round"
-              shadowColor={selected ? cab.color : undefined}
-              shadowBlur={selected ? 8 : 0}
+              shadowColor={selected || hoverActive ? cab.color : undefined}
+              shadowBlur={selected ? 8 : hoverActive ? 6 : 0}
+              shadowOpacity={selected ? 0.55 : hoverActive ? HOVER_SHADOW_OPACITY : 0}
               onClick={onClick}
               onMouseDown={onClick}
+              onMouseEnter={(e) => {
+                if (mid) {
+                  showHoverHint({
+                    text: selected && draggable ? "move run label or joints" : "select cable run",
+                    x: mid.x + 7,
+                    y: mid.y - 16,
+                    targetKey: `${m.id}:cable`,
+                  });
+                }
+                setStageCursor(e, "pointer");
+              }}
+              onMouseLeave={(e) => {
+                hideHoverHint();
+                setStageCursor(e, "");
+              }}
               hitStrokeWidth={Math.max(10, (cab.thickness ?? 2) + 6)}
             />
           )}
-          {mid && labelVisible && (
+          {mid && showRunLabel && (
             <Group
               x={mid.x + labelOffset.dx}
               y={mid.y + labelOffset.dy}
               listening
-              draggable={draggable}
+              draggable={selected && draggable}
               dragDistance={3}
-              onClick={onRunLabelClick}
-              onTap={onRunLabelClick}
-              onMouseEnter={(e) => draggable && setStageCursor(e, "grab")}
-              onMouseLeave={(e) => draggable && setStageCursor(e, "")}
+              onClick={onClick}
+              onTap={onClick}
+              onMouseEnter={(e) => {
+                const canMoveLabel = selected && draggable;
+                showHoverHint({
+                  text: canMoveLabel ? "move label" : "select label",
+                  x: mid.x + labelOffset.dx + labelW / 2 + 5,
+                  y: mid.y + labelOffset.dy - labelH / 2 - 5,
+                  targetKey: `${m.id}:run-label`,
+                });
+                setStageCursor(e, canMoveLabel ? "grab" : "pointer");
+              }}
+              onMouseLeave={(e) => {
+                hideHoverHint();
+                setStageCursor(e, "");
+              }}
               onMouseDown={(e) => {
-                onRunLabelClick(e);
+                if (!(selected && draggable)) return;
+                onClick(e);
                 e.cancelBubble = true;
                 e.evt?.stopPropagation?.();
               }}
               onDragStart={(e) => {
                 e.cancelBubble = true;
-                beginHistoryTransaction();
-                setStageCursor(e, "grabbing");
+                clearHoverForDrag(e);
               }}
               onDragMove={(e) => {
                 e.cancelBubble = true;
               }}
               onDragEnd={(e) => {
                 e.cancelBubble = true;
-                setStageCursor(e, "grab");
                 updateMarkup(m.id, {
                   labelOffsetX: e.target.x() - mid.x,
                   labelOffsetY: e.target.y() - mid.y,
                 } as any);
-                endHistoryTransaction();
+                finishHoverDrag(e);
               }}
             >
               <Rect
@@ -847,12 +1065,12 @@ function renderMarkup(
                 height={labelH}
                 fill="#0B1220"
                 stroke={cab.color}
-                strokeWidth={0.55}
+                strokeWidth={hoverActive ? 0.85 : 0.55}
                 cornerRadius={3}
-                opacity={0.92}
-                shadowColor="rgba(0,0,0,0.55)"
-                shadowBlur={3}
-                shadowOpacity={0.55}
+                opacity={hoverActive ? 0.96 : 0.92}
+                shadowColor={hoverActive ? cab.color : "rgba(0,0,0,0.55)"}
+                shadowBlur={hoverActive ? 7 : 3}
+                shadowOpacity={hoverActive ? HOVER_SHADOW_OPACITY : 0.55}
                 perfectDrawEnabled={false}
               />
               {selected && draggable && (
@@ -905,8 +1123,19 @@ function renderMarkup(
                   y={y}
                   draggable
                   dragDistance={2}
-                  onMouseEnter={(e) => setStageCursor(e, "grab")}
-                  onMouseLeave={(e) => setStageCursor(e, "")}
+                  onMouseEnter={(e) => {
+                    showHoverHint({
+                      text: "move joint",
+                      x: x + 7,
+                      y: y - 15,
+                      targetKey: `${m.id}:joint:${pointIndex}`,
+                    });
+                    setStageCursor(e, "grab");
+                  }}
+                  onMouseLeave={(e) => {
+                    hideHoverHint();
+                    setStageCursor(e, "");
+                  }}
                   onMouseDown={(e) => {
                     onClick(e);
                     e.cancelBubble = true;
@@ -914,8 +1143,7 @@ function renderMarkup(
                   }}
                   onDragStart={(e) => {
                     e.cancelBubble = true;
-                    beginHistoryTransaction();
-                    setStageCursor(e, "grabbing");
+                    clearHoverForDrag(e);
                   }}
                   onDragMove={(e) => {
                     e.cancelBubble = true;
@@ -930,7 +1158,6 @@ function renderMarkup(
                   }}
                   onDragEnd={(e) => {
                     e.cancelBubble = true;
-                    setStageCursor(e, "grab");
                     moveCableVertex(
                       m,
                       sheetMarkups,
@@ -939,7 +1166,7 @@ function renderMarkup(
                       e.target.y(),
                       updateMarkup,
                     );
-                    endHistoryTransaction();
+                    finishHoverDrag(e);
                   }}
                 >
                   <Circle radius={7} fill="rgba(11,18,32,0.01)" />
@@ -947,8 +1174,11 @@ function renderMarkup(
                     radius={2.6}
                     fill="#0B1220"
                     stroke={cab.color}
-                    strokeWidth={0.9}
-                    opacity={0.92}
+                    strokeWidth={hovered ? 1.15 : 0.9}
+                    opacity={hovered ? 1 : 0.92}
+                    shadowColor={cab.color}
+                    shadowBlur={hovered ? 4 : 0}
+                    shadowOpacity={hovered ? HOVER_SHADOW_OPACITY : 0}
                     listening={false}
                   />
                   <Circle
@@ -975,10 +1205,24 @@ function renderMarkup(
           fill={m.color}
           onClick={onClick}
           onMouseDown={onClick}
+          onMouseEnter={() => {
+            showHoverHint({
+              text: draggable ? "move text" : "select text",
+              x: m.x + Math.max(28, m.text.length * m.fontSize * 0.45),
+              y: m.y - 14,
+              targetKey: `${m.id}:text`,
+            });
+          }}
+          onMouseLeave={hideHoverHint}
           draggable={draggable}
-          onDragEnd={(e) => updateMarkup(m.id, { x: e.target.x(), y: e.target.y() } as any)}
-          shadowColor={selected ? "#F4B740" : undefined}
-          shadowBlur={selected ? 6 : 0}
+          onDragStart={clearHoverForDrag}
+          onDragEnd={(e) => {
+            updateMarkup(m.id, { x: e.target.x(), y: e.target.y() } as any);
+            finishHoverDrag(e);
+          }}
+          shadowColor={selected ? "#F4B740" : hovered ? m.color : undefined}
+          shadowBlur={selected ? 6 : hovered ? 5 : 0}
+          shadowOpacity={selected ? 0.55 : hovered ? HOVER_SHADOW_OPACITY : 0}
         />
       );
 
@@ -986,11 +1230,30 @@ function renderMarkup(
       const boxW = Math.max(60, m.text.length * 7 + 12);
       const boxH = 22;
       return (
-        <Group onClick={onClick} onMouseDown={onClick}>
+        <Group
+          onClick={onClick}
+          onMouseDown={onClick}
+          onMouseEnter={(e) => {
+            showHoverHint({
+              text: "select callout",
+              x: m.x2 + boxW + 6,
+              y: m.y2 - boxH / 2 - 8,
+              targetKey: `${m.id}:callout`,
+            });
+            setStageCursor(e, "pointer");
+          }}
+          onMouseLeave={(e) => {
+            hideHoverHint();
+            setStageCursor(e, "");
+          }}
+        >
           <Line
             points={[m.x1, m.y1, m.x2, m.y2]}
             stroke={m.color}
-            strokeWidth={1.5}
+            strokeWidth={1.5 + (hovered && !selected ? 0.3 : 0)}
+            shadowColor={hovered && !selected ? m.color : undefined}
+            shadowBlur={hovered && !selected ? 5 : 0}
+            shadowOpacity={hovered && !selected ? HOVER_SHADOW_OPACITY : 0}
           />
           <Rect
             x={m.x2}
@@ -999,8 +1262,11 @@ function renderMarkup(
             height={boxH}
             fill="#0B1220"
             stroke={m.color}
-            strokeWidth={1}
+            strokeWidth={hovered && !selected ? 1.25 : 1}
             cornerRadius={3}
+            shadowColor={hovered && !selected ? m.color : undefined}
+            shadowBlur={hovered && !selected ? 6 : 0}
+            shadowOpacity={hovered && !selected ? HOVER_SHADOW_OPACITY : 0}
           />
           <Text
             x={m.x2 + 6}
@@ -1031,10 +1297,26 @@ function renderMarkup(
         <Path
           data={cloudPath(m.x, m.y, m.width, m.height)}
           stroke={m.color}
-          strokeWidth={selected ? 2.5 : 1.8}
+          strokeWidth={selected ? 2.5 : hovered ? 2.1 : 1.8}
           fill="rgba(0,0,0,0)"
           onClick={onClick}
           onMouseDown={onClick}
+          onMouseEnter={(e) => {
+            showHoverHint({
+              text: "select cloud",
+              x: m.x + m.width + 6,
+              y: m.y - 12,
+              targetKey: `${m.id}:cloud`,
+            });
+            setStageCursor(e, "pointer");
+          }}
+          onMouseLeave={(e) => {
+            hideHoverHint();
+            setStageCursor(e, "");
+          }}
+          shadowColor={!selected && hovered ? m.color : undefined}
+          shadowBlur={!selected && hovered ? 6 : 0}
+          shadowOpacity={!selected && hovered ? HOVER_SHADOW_OPACITY : 0}
         />
       );
 
@@ -1048,8 +1330,31 @@ function renderMarkup(
       const px = -Math.sin(angle) * tickLen;
       const py = Math.cos(angle) * tickLen;
       return (
-        <Group onClick={onClick} onMouseDown={onClick}>
-          <Line points={[m.p1.x, m.p1.y, m.p2.x, m.p2.y]} stroke={m.color} strokeWidth={1.2} />
+        <Group
+          onClick={onClick}
+          onMouseDown={onClick}
+          onMouseEnter={(e) => {
+            showHoverHint({
+              text: "select dimension",
+              x: midX + 8,
+              y: midY - 24,
+              targetKey: `${m.id}:dimension`,
+            });
+            setStageCursor(e, "pointer");
+          }}
+          onMouseLeave={(e) => {
+            hideHoverHint();
+            setStageCursor(e, "");
+          }}
+        >
+          <Line
+            points={[m.p1.x, m.p1.y, m.p2.x, m.p2.y]}
+            stroke={m.color}
+            strokeWidth={hovered && !selected ? 1.45 : 1.2}
+            shadowColor={hovered && !selected ? m.color : undefined}
+            shadowBlur={hovered && !selected ? 5 : 0}
+            shadowOpacity={hovered && !selected ? HOVER_SHADOW_OPACITY : 0}
+          />
           <Line points={[m.p1.x - px, m.p1.y - py, m.p1.x + px, m.p1.y + py]} stroke={m.color} strokeWidth={1.2} />
           <Line points={[m.p2.x - px, m.p2.y - py, m.p2.x + px, m.p2.y + py]} stroke={m.color} strokeWidth={1.2} />
           <Label x={midX} y={midY - 14} listening={false}>
@@ -1075,61 +1380,173 @@ function renderMarkup(
           height={m.height}
           stroke={m.color}
           fill={m.fill}
-          strokeWidth={selected ? 2.5 : 1.5}
+          strokeWidth={selected ? 2.5 : hovered ? 1.8 : 1.5}
           onClick={onClick}
           onMouseDown={onClick}
+          onMouseEnter={() => {
+            showHoverHint({
+              text: draggable ? "move shape" : "select shape",
+              x: m.x + m.width + 6,
+              y: m.y - 12,
+              targetKey: `${m.id}:rect`,
+            });
+          }}
+          onMouseLeave={hideHoverHint}
           draggable={draggable}
-          onDragEnd={(e) => updateMarkup(m.id, { x: e.target.x(), y: e.target.y() } as any)}
+          onDragStart={clearHoverForDrag}
+          onDragEnd={(e) => {
+            updateMarkup(m.id, { x: e.target.x(), y: e.target.y() } as any);
+            finishHoverDrag(e);
+          }}
+          shadowColor={!selected && hovered ? m.color : undefined}
+          shadowBlur={!selected && hovered ? 6 : 0}
+          shadowOpacity={!selected && hovered ? HOVER_SHADOW_OPACITY : 0}
         />
       );
 
-    case "arrow":
+    case "arrow": {
+      const midX = (m.p1.x + m.p2.x) / 2;
+      const midY = (m.p1.y + m.p2.y) / 2;
       return (
         <Arrow
           points={[m.p1.x, m.p1.y, m.p2.x, m.p2.y]}
           stroke={m.color}
           fill={m.color}
-          strokeWidth={selected ? 2.5 : 1.6}
+          strokeWidth={selected ? 2.5 : hovered ? 1.9 : 1.6}
           pointerLength={10}
           pointerWidth={10}
           onClick={onClick}
           onMouseDown={onClick}
+          onMouseEnter={(e) => {
+            showHoverHint({
+              text: "select arrow",
+              x: midX + 8,
+              y: midY - 14,
+              targetKey: `${m.id}:arrow`,
+            });
+            setStageCursor(e, "pointer");
+          }}
+          onMouseLeave={(e) => {
+            hideHoverHint();
+            setStageCursor(e, "");
+          }}
+          shadowColor={!selected && hovered ? m.color : undefined}
+          shadowBlur={!selected && hovered ? 6 : 0}
+          shadowOpacity={!selected && hovered ? HOVER_SHADOW_OPACITY : 0}
         />
       );
+    }
 
-    case "polygon":
+    case "polygon": {
+      const bounds = boundsOfFlatPoints(m.points);
       return (
         <Line
           points={m.points}
           stroke={m.color}
-          strokeWidth={selected ? 2.5 : 1.5}
+          strokeWidth={selected ? 2.5 : hovered ? 1.8 : 1.5}
           fill={m.fill}
           closed
           onClick={onClick}
           onMouseDown={onClick}
+          onMouseEnter={(e) => {
+            showHoverHint({
+              text: "select polygon",
+              x: bounds.x + bounds.width + 6,
+              y: bounds.y - 12,
+              targetKey: `${m.id}:polygon`,
+            });
+            setStageCursor(e, "pointer");
+          }}
+          onMouseLeave={(e) => {
+            hideHoverHint();
+            setStageCursor(e, "");
+          }}
+          shadowColor={!selected && hovered ? m.color : undefined}
+          shadowBlur={!selected && hovered ? 6 : 0}
+          shadowOpacity={!selected && hovered ? HOVER_SHADOW_OPACITY : 0}
         />
       );
+    }
 
-    case "freehand":
+    case "freehand": {
+      const bounds = boundsOfFlatPoints(m.points);
       return (
         <Line
           points={m.points}
           stroke={m.color}
-          strokeWidth={m.thickness + (selected ? 1 : 0)}
+          strokeWidth={m.thickness + (selected ? 1 : hovered ? 0.6 : 0)}
           lineCap="round"
           lineJoin="round"
           tension={0.4}
           onClick={onClick}
           onTap={onClick}
           onMouseDown={onClick}
+          onMouseEnter={(e) => {
+            showHoverHint({
+              text: "select stroke",
+              x: bounds.x + bounds.width + 6,
+              y: bounds.y - 12,
+              targetKey: `${m.id}:freehand`,
+            });
+            setStageCursor(e, "pointer");
+          }}
+          onMouseLeave={(e) => {
+            hideHoverHint();
+            setStageCursor(e, "");
+          }}
           // Generous hit area so the eraser tool feels forgiving — thin
           // pen strokes are otherwise nearly impossible to land a click on.
           hitStrokeWidth={Math.max(14, m.thickness + 10)}
-          shadowColor={selected ? m.color : undefined}
-          shadowBlur={selected ? 6 : 0}
+          shadowColor={selected || hovered ? m.color : undefined}
+          shadowBlur={selected ? 6 : hovered ? 5 : 0}
+          shadowOpacity={selected ? 0.55 : hovered ? HOVER_SHADOW_OPACITY : 0}
         />
       );
+    }
   }
+}
+
+function HoverHintLabel({ hint }: { hint: HoverHint }) {
+  return (
+    <Label x={hint.x} y={hint.y} listening={false} opacity={hint.fading ? 0.16 : 0.36}>
+      <Tag
+        fill="#0B1220"
+        stroke="#B8C3D7"
+        strokeWidth={0.14}
+        cornerRadius={2}
+        shadowColor="#000000"
+        shadowBlur={1}
+        shadowOpacity={0.08}
+        perfectDrawEnabled={false}
+      />
+      <Text
+        text={hint.text}
+        fontFamily="JetBrains Mono"
+        fontStyle="500"
+        fontSize={5}
+        fill="#B8C3D7"
+        padding={1.6}
+        perfectDrawEnabled={false}
+      />
+    </Label>
+  );
+}
+
+function boundsOfFlatPoints(points: number[]) {
+  if (points.length < 2) return { x: 0, y: 0, width: 0, height: 0 };
+  let minX = points[0];
+  let maxX = points[0];
+  let minY = points[1];
+  let maxY = points[1];
+  for (let i = 2; i < points.length; i += 2) {
+    const x = points[i];
+    const y = points[i + 1];
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 
 function midpointOfPolyline(points: number[]) {

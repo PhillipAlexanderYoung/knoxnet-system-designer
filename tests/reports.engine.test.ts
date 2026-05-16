@@ -195,6 +195,75 @@ describe("selectEntities", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("surfaces container internal port assignments in connection and port reports", () => {
+    const p = mkProject();
+    p.sheets[0].markups.push(
+      {
+        id: "m4",
+        kind: "device",
+        deviceId: "net-headend",
+        category: "network",
+        x: 400,
+        y: 400,
+        tag: "HE-01",
+        layer: "network",
+      },
+      {
+        id: "m5",
+        kind: "device",
+        deviceId: "net-switch-poe",
+        category: "network",
+        x: 420,
+        y: 400,
+        tag: "SW-01",
+        layer: "network",
+        parentId: "m4",
+      },
+      {
+        id: "m6",
+        kind: "device",
+        deviceId: "net-wifi-bridge",
+        category: "network",
+        x: 100,
+        y: 400,
+        tag: "BR-01",
+        layer: "network",
+      },
+    );
+    p.connections?.push({
+      id: "c2",
+      fromTag: "BR-01",
+      toTag: "HE-01",
+      medium: "cat6",
+      internalEndpoint: {
+        containerId: "m4",
+        containerTag: "HE-01",
+        deviceId: "m5",
+        deviceTag: "SW-01",
+        portId: "port-1",
+      },
+    });
+
+    const connectionRows = selectEntities(p, "connections");
+    expect(connectionRows.find((row) => row.id === "c2")).toMatchObject({
+      internalContainerTag: "HE-01",
+      internalDeviceTag: "SW-01",
+      internalPortId: "port-1",
+      internalPort: "Port 1",
+    });
+
+    const portRows = selectEntities(p, "ports");
+    const switchPort = portRows.find(
+      (row) =>
+        row.deviceTag === "SW-01" &&
+        (row.port as Record<string, unknown>).id === "port-1",
+    );
+    expect(switchPort).toMatchObject({
+      isConnected: true,
+      connectedTo: "BR-01",
+    });
+  });
+
   it("surfaces physical cable labels in cable report rows", () => {
     const p = mkProject();
     p.sheets[0].calibration = {
@@ -212,6 +281,7 @@ describe("selectEntities", () => {
       physicalLabel: "CBL-CAM-001",
       endpointA: "SW-01",
       endpointB: "CAM-01",
+      servedDevices: ["CAM-01", "CAM-02"],
       runCount: 1,
       points: [0, 0, 100, 0],
     });
@@ -222,6 +292,7 @@ describe("selectEntities", () => {
       physicalLabel: "CBL-CAM-001",
       endpointA: "SW-01",
       endpointB: "CAM-01",
+      servedDevices: "CAM-01, CAM-02",
       lengthFt: 10,
     });
   });

@@ -1,6 +1,10 @@
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
-import { devices as deviceCatalog, type DeviceCategory } from "../data/devices";
+import {
+  devices as deviceCatalog,
+  effectiveDevicePorts,
+  type DeviceCategory,
+} from "../data/devices";
 import { cables as cableCatalog } from "../data/cables";
 import { rackDevices as rackCatalog } from "../data/rackDevices";
 import { defaultBidDefaults, type BidDefaults } from "../data/defaults";
@@ -14,11 +18,26 @@ import { buildStarterTemplates } from "../reports/starterTemplates";
 import {
   buildCableRunConnection,
   buildCableRunMarkup,
+  endpointFromMarkup,
   isRouteInfrastructureMarkup,
   nearestCableRunEndpoint,
   routeInfrastructureLabel,
   type CableRunEndpointKey,
 } from "../lib/cableRuns";
+import {
+  deviceDisplayName,
+  isRackDevice,
+  nearestContainerForDevice,
+  nestedChildren,
+  nestedSlotPoint,
+  rackDeviceIdForNestedDevice,
+} from "../lib/nesting";
+import {
+  findDeviceById,
+  findDeviceByTag,
+  findPort,
+  nextAvailableInternalPort,
+} from "../lib/connections";
 import { DEFAULT_CONDUIT_SIZE, DEFAULT_CONDUIT_TYPE } from "../lib/conduit";
 import {
   DEFAULT_FIBER_STRAND_COUNT,
@@ -26,13 +45,16 @@ import {
   normalizeFiberStrandCount,
 } from "../lib/fiber";
 import {
-  deviceDisplayName,
-  isContainerDevice,
-  isRackDevice,
-  nearestContainerForDevice,
-  rackDeviceIdForNestedDevice,
-  nestedSlotPoint,
-} from "../lib/nesting";
+  assignGeneratedCableLabels,
+  projectWithGeneratedCableLabels,
+  type CableLabelScheme,
+} from "../lib/cableLabels";
+import {
+  DEFAULT_CANVAS_VIEWPORT,
+  loadCanvasViewport,
+  normalizeCanvasViewport,
+  type CanvasViewport,
+} from "../lib/canvasViewport";
 
 // ───────── Types ─────────
 
@@ -92,10 +114,10 @@ export interface Diagram {
 
 export interface RackPlacement {
   id: string;
+  /** Optional source device markup that generated this placement from a nested Rack bubble. */
+  sourceMarkupId?: string;
   /** ref into rackDevices.ts */
   deviceId: string;
-  /** Optional plan device markup this placement was created from. */
-  sourceMarkupId?: string;
   /** U position from the bottom (1 = lowest U). The device occupies
    *  uSlot through uSlot + uHeight - 1. */
   uSlot: number;
@@ -109,9 +131,9 @@ export interface RackPlacement {
 
 export interface Rack {
   id: string;
-  name: string;
-  /** Optional plan Rack markup this rack system entry is linked to. */
+  /** Optional source Rack device markup that generated this rack from the plan. */
   sourceMarkupId?: string;
+  name: string;
   /** Total rack height in U (e.g. 42, 24, 12) */
   uHeight: number;
   /** Optional location label (e.g. "Head-end Cabinet · Equipment Rm 102") */
@@ -579,8 +601,19 @@ export interface DeviceConnection {
   medium?: string;
   /** ID of the CableMarkup on canvas representing this physical run */
   cableMarkupId?: string;
+  /** Optional internal termination when a physical run lands on a container. */
+  internalEndpoint?: InternalConnectionEndpoint;
   label?: string;
   notes?: string;
+}
+
+export interface InternalConnectionEndpoint {
+  containerId: string;
+  containerTag: string;
+  deviceId: string;
+  deviceTag: string;
+  portId?: string;
+  port?: string;
 }
 
 export interface DeviceMarkup extends BaseMarkup {
@@ -667,20 +700,19 @@ export interface CableMarkup extends BaseMarkup {
   connector?: string; // e.g. "RJ45", "LC-LC", "F-Type", "BNC"
   endpointA?: string; // e.g. "MDF Patch 12"
   endpointB?: string; // e.g. "AP-04"
+  /** Compact metadata for branch targets served by this route. */
+  servedDevices?: string[];
   /** Run label offset from the path midpoint, in PDF user units. When unset,
    *  the canvas/export use an automatic lane so conduit and carried fiber
    *  labels do not sit on top of each other. */
   labelOffsetX?: number;
   labelOffsetY?: number;
-  /** Per-run label visibility override. Undefined/true means the run is
-   *  eligible for the global smart label policy; false suppresses it. */
+  /** Per-run label visibility override. */
   showLabel?: boolean;
 }
 
 export interface CableRunPointAttachment {
-  /** Stable markup id for the device that owns this route point. */
   deviceMarkupId?: string;
-  /** Device tag fallback for older/imported runs. */
   deviceTag?: string;
   label?: string;
   deviceId?: string;
@@ -851,6 +883,8 @@ export interface CatalogOverrides {
   rackDevices: Record<string, { cost?: number; labor?: number }>;
 }
 
+export type BidLineLaborOverrides = Record<string, { laborHours: number }>;
+
 /**
  * Which rollup lines are revealed on customer-facing exports. Hidden lines
  * still affect the Grand Total — they just don't appear as separate line
@@ -964,10 +998,15 @@ export interface Project {
   sheets: Sheet[];
   racks: Rack[];
   bidDefaults: BidDefaults;
-  /** Top-to-bottom editor/export layer stack. First layer draws above later
-   *  layers; missing projects fall back to `DEFAULT_LAYERS`. */
+  /** Top-to-bottom editor/export layer stack. */
   layers?: Layer[];
   catalogOverrides?: CatalogOverrides;
+  /**
+   * Per-project estimate labor overrides keyed by deterministic bid line IDs
+   * (for example `device:cam-dome` or `cable:cat6`). These affect the current
+   * bid only and never mutate catalog/unit labor defaults.
+   */
+  bidLaborOverrides?: BidLineLaborOverrides;
   /** Theme used for branded chrome on exports. Defaults to `auto`. */
   brandTheme?: BrandTheme;
   /** Per-project branding overrides (wordmark, tagline, full company
@@ -1014,35 +1053,21 @@ export interface Project {
     /** Default font size in PDF units. When undefined the editor
      *  scales font with icon size: `max(10, size * 0.35)`. */
     fontSize?: number;
+    /** Device/run tag chip fill. Defaults to Knox midnight. */
+    fillColor?: string;
+    /** Device/run tag text color. Defaults to white, or auto-contrast for custom fills. */
+    textColor?: string;
+    /** Use the project's brand accent as the tag chip fill. */
+    brandTags?: boolean;
   };
-  /** Global view/export toggle for compact cable/conduit run labels.
-   *  Defaults hidden to keep route-heavy sheets readable; when enabled,
-   *  dense clusters are still de-cluttered unless labels are manually pinned. */
+  /** Global view/export toggle for compact cable/conduit run labels. */
   runLabelsVisible?: boolean;
+  /** Optional physical-label numbering scheme for generated cable labels.
+   *  Missing values fall back to C-001, F-001, and CN-001 sequences. */
+  cableLabelScheme?: CableLabelScheme;
   createdAt: number;
   updatedAt: number;
 }
-
-const HISTORY_LIMIT = 500;
-
-interface ProjectHistory {
-  past: Project[];
-  future: Project[];
-  transactionBase: Project | null;
-  paused: boolean;
-}
-
-const emptyHistory = (paused = false): ProjectHistory => ({
-  past: [],
-  future: [],
-  transactionBase: null,
-  paused,
-});
-
-const pushHistorySnapshot = (past: Project[], snapshot: Project): Project[] => {
-  const next = [...past, snapshot];
-  return next.length > HISTORY_LIMIT ? next.slice(next.length - HISTORY_LIMIT) : next;
-};
 
 // ───────── Default layers ─────────
 
@@ -1062,28 +1087,52 @@ export const DEFAULT_LAYERS: Layer[] = [
   { id: "annotation", label: "Annotation", visible: true, locked: false },
 ];
 
-const DEFAULT_LAYER_BY_ID = new Map(DEFAULT_LAYERS.map((l) => [l.id, l]));
-
 export function normalizeLayers(layers: Layer[] | undefined): Layer[] {
-  if (!layers || layers.length === 0) return DEFAULT_LAYERS.map((l) => ({ ...l }));
-  const seen = new Set<LayerId>();
+  if (!layers) return DEFAULT_LAYERS.map((layer) => ({ ...layer }));
+
+  const defaultsById = new Map(DEFAULT_LAYERS.map((layer) => [layer.id, layer]));
+  const seen = new Set<string>();
   const normalized: Layer[] = [];
+
   for (const layer of layers) {
-    const base = DEFAULT_LAYER_BY_ID.get(layer.id);
-    if (!base || seen.has(layer.id)) continue;
+    const fallback = defaultsById.get(layer.id);
+    normalized.push({ ...(fallback ?? layer), ...layer });
     seen.add(layer.id);
-    normalized.push({ ...base, ...layer });
   }
-  for (const base of DEFAULT_LAYERS) {
-    if (!seen.has(base.id)) normalized.push({ ...base });
+
+  for (const fallback of DEFAULT_LAYERS) {
+    if (!seen.has(fallback.id)) normalized.push({ ...fallback });
   }
+
   return normalized;
 }
 
 // ───────── Store shape ─────────
 
+interface HistoryState {
+  past: Project[];
+  future: Project[];
+  transactionDepth: number;
+  transactionBase: Project | null;
+}
+
+interface CableRunBulkBranchState {
+  route: CableRunEndpoint[] | null;
+  targetEndpoints: CableRunEndpoint[];
+  sourceCableMarkupId?: string;
+  baseProject: Project;
+  previewCableMarkupIds: string[];
+}
+
+export interface LockMoveHintState {
+  message: string;
+  shownAt: number;
+  pulseKey: number;
+}
+
 interface State {
   project: Project | null;
+  history: HistoryState;
   view: ViewMode;
   activeSheetId: string | null;
   activeRackId: string | null;
@@ -1103,14 +1152,14 @@ interface State {
   /** ephemeral cursor position in sheet (pdf-user) units, for status bar */
   cursor: { x: number; y: number } | null;
   /** zoom level (multiplied by renderScale to derive bg DPR) */
-  viewport: { scale: number; x: number; y: number };
+  viewport: CanvasViewport;
+  /** Per-sheet editor view state, intentionally kept out of Project export data. */
+  sheetViewports: Record<string, CanvasViewport>;
   /** snap state */
   snapEnabled: boolean;
   orthoEnabled: boolean;
   /** Global toggle: render coverage shapes for devices that have them */
   coverageVisible: boolean;
-  /** Global toggle: render compact cable/conduit run labels */
-  runLabelsVisible: boolean;
   /** Live ghost of the export branding (branded title block + device
    *  legend) overlayed on the editor canvas. On by default so the user
    *  always sees what's about to print; can be dismissed if it gets in
@@ -1132,6 +1181,10 @@ interface State {
   freehandErasing: boolean;
   /** In-progress routed Cable Run draft. */
   cableRunDraft: CableRunDraft | null;
+  /** Shift-held multi-device cable drop preview. */
+  cableRunBulkBranch: CableRunBulkBranchState | null;
+  /** Global editor/export toggle for cable/conduit run labels. */
+  runLabelsVisible: boolean;
   /** Performance profile — controls render DPI, ingest concurrency, and
    *  re-render aggressiveness. */
   qualityMode: QualityMode;
@@ -1144,17 +1197,17 @@ interface State {
   commandPaletteOpen: boolean;
   /** Toast notifications */
   toasts: { id: string; kind: "info" | "success" | "error"; message: string }[];
-  /** Project-edit undo/redo snapshots. UI state lives outside this history. */
-  history: ProjectHistory;
+  /** Transient nudge shown when a locked device blocks movement. */
+  lockMoveHint: LockMoveHintState | null;
 
   // actions
   newProject: (meta?: Partial<ProjectMeta>) => void;
   loadProject: (p: Project) => void;
   undo: () => void;
   redo: () => void;
+  clearHistory: () => void;
   beginHistoryTransaction: () => void;
   endHistoryTransaction: () => void;
-  clearHistory: () => void;
   updateProjectMeta: (patch: Partial<ProjectMeta>) => void;
   updateBidDefaults: (patch: Partial<BidDefaults>) => void;
   setBidExportVisibility: (line: keyof BidExportVisibility, visible: boolean) => void;
@@ -1170,6 +1223,7 @@ interface State {
     id: string,
     patch: Partial<{ cost: number; labor: number }> | null,
   ) => void;
+  setBidLineLaborOverride: (lineId: string, laborHours: number | null) => void;
   applyBulkPriceMultiplier: (
     target: "all" | "devices" | "cables" | "rackDevices",
     multiplier: number,
@@ -1243,8 +1297,16 @@ interface State {
   placeCableRunEndpoint: (endpoint: CableRunEndpoint) => "started" | "routed" | "completed" | null;
   branchCableRunEndpoint: (endpoint: CableRunEndpoint) => "completed" | null;
   branchCableRunToEndpoints: (endpoints: CableRunEndpoint[]) => number;
+  beginCableRunBulkBranch: (
+    route?: CableRunEndpoint[] | null,
+    sourceCableMarkupId?: string,
+  ) => void;
+  toggleCableRunBulkBranchTarget: (endpoint: CableRunEndpoint) => number;
+  commitCableRunBulkBranch: () => number;
+  cancelCableRunBulkBranch: () => void;
   appendCableRunPath: (points: number[]) => "started" | "routed" | null;
   finishCableRunDraft: () => "completed" | null;
+  toggleRunLabelsVisible: () => void;
   toggleBrandPreview: () => void;
   openPagePreview: (which: "cover" | "bom") => void;
   closePagePreview: () => void;
@@ -1252,6 +1314,7 @@ interface State {
   addMarkup: (m: Markup) => void;
   updateMarkup: (id: string, patch: Partial<Markup>) => void;
   moveDeviceMarkup: (id: string, x: number, y: number) => void;
+  setAllDeviceMarkupsLocked: (locked: boolean) => number;
   attachRouteInfrastructureToRun: (
     deviceId: string,
     cableMarkupId: string,
@@ -1264,7 +1327,7 @@ interface State {
 
   toggleLayer: (id: LayerId) => void;
   setLayerLocked: (id: LayerId, locked: boolean) => void;
-  moveLayer: (id: LayerId, direction: "up" | "down") => void;
+  moveLayer: (id: LayerId, dir: "up" | "down") => void;
 
   /** Update (or clear) the full system/commissioning config for a device markup */
   setDeviceSystemConfig: (markupId: string, config: DeviceSystemConfig | undefined) => void;
@@ -1273,6 +1336,7 @@ interface State {
   addConnection: (conn: DeviceConnection) => void;
   updateConnection: (id: string, patch: Partial<DeviceConnection>) => void;
   removeConnection: (id: string) => void;
+  autoAssignContainerInternalConnections: (containerId: string) => number;
 
   /** Custom report templates */
   addReport: (template: ReportTemplate) => void;
@@ -1300,11 +1364,10 @@ interface State {
 
   setCalibration: (sheetId: string, c: Calibration | undefined) => void;
   setCursor: (p: { x: number; y: number } | null) => void;
-  setViewport: (v: Partial<{ scale: number; x: number; y: number }>) => void;
+  setViewport: (v: Partial<CanvasViewport>) => void;
   toggleSnap: () => void;
   toggleOrtho: () => void;
   toggleCoverageVisible: () => void;
-  toggleRunLabelsVisible: () => void;
   setQualityMode: (m: QualityMode) => void;
   setIngestProgress: (
     p: Partial<{ total: number; done: number; failed: number }>,
@@ -1318,6 +1381,8 @@ interface State {
 
   pushToast: (kind: "info" | "success" | "error", message: string) => void;
   dismissToast: (id: string) => void;
+  notifyLockedDeviceMoveAttempt: () => void;
+  clearLockMoveHint: (pulseKey?: number) => void;
 
   /** Auto-numbering helper: returns next free tag for a shortCode on active sheet */
   nextTag: (shortCode: string) => string;
@@ -1325,143 +1390,86 @@ interface State {
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-function removeRackPlacementForMarkup(racks: Rack[], sourceMarkupId: string): Rack[] {
-  return racks.map((rack) => ({
-    ...rack,
-    placements: rack.placements.filter((p) => p.sourceMarkupId !== sourceMarkupId),
-  }));
-}
+const emptyHistory = (): HistoryState => ({
+  past: [],
+  future: [],
+  transactionDepth: 0,
+  transactionBase: null,
+});
 
-function nextRackUSlot(rack: Rack, deviceId: string): number {
-  const device = rackCatalog.find((d) => d.id === deviceId);
-  const height = device?.uHeight ?? 1;
-  for (let slot = 1; slot <= Math.max(1, rack.uHeight - height + 1); slot += 1) {
-    const end = slot + height - 1;
-    const overlaps = rack.placements.some((p) => {
-      const placed = rackCatalog.find((d) => d.id === p.deviceId);
-      const placedHeight = placed?.uHeight ?? 1;
-      const placedEnd = p.uSlot + placedHeight - 1;
-      return slot <= placedEnd && end >= p.uSlot;
-    });
-    if (!overlaps) return slot;
-  }
-  return 1;
-}
-
-function syncRackSystemForNestedDevice(
-  project: Project,
-  sheet: Sheet,
-  child: DeviceMarkup,
-): Project {
-  const existingPlacement = (project.racks ?? [])
-    .flatMap((rack) => rack.placements)
-    .find((p) => p.sourceMarkupId === child.id);
-  const withoutExistingPlacement = removeRackPlacementForMarkup(
-    project.racks ?? [],
-    child.id,
-  );
-  const parent = child.parentId
-    ? sheet.markups.find(
-        (m): m is DeviceMarkup => m.kind === "device" && m.id === child.parentId,
-      )
-    : null;
-  if (!parent || !isRackDevice(parent)) {
-    return { ...project, racks: withoutExistingPlacement };
-  }
-
-  const rackDeviceId = rackDeviceIdForNestedDevice(child);
-  const rackIndex = withoutExistingPlacement.findIndex(
-    (rack) => rack.sourceMarkupId === parent.id,
-  );
-  const now = Date.now();
-  const rackName = parent.tag ? `${parent.tag} Rack` : deviceDisplayName(parent);
-  const racks =
-    rackIndex >= 0
-      ? withoutExistingPlacement.map((rack, index) =>
-          index === rackIndex
-            ? {
-                ...rack,
-                sourceMarkupId: parent.id,
-                associatedSheetId: sheet.id,
-                updatedAt: now,
-              }
-            : rack,
-        )
-      : [
-          ...withoutExistingPlacement,
-          {
-            id: uid(),
-            name: rackName,
-            sourceMarkupId: parent.id,
-            uHeight: 42,
-            location: sheet.name,
-            associatedSheetId: sheet.id,
-            placements: [],
-            createdAt: now,
-            updatedAt: now,
-          },
-        ];
-
-  if (!rackDeviceId) return { ...project, racks };
-
-  const targetRackIndex =
-    rackIndex >= 0 ? rackIndex : racks.findIndex((rack) => rack.sourceMarkupId === parent.id);
-  const nextRacks = racks.map((rack, index) => {
-    if (index !== targetRackIndex) return rack;
-    const placement: RackPlacement = {
-      ...existingPlacement,
-      id: existingPlacement?.id ?? uid(),
-      deviceId: rackDeviceId,
-      sourceMarkupId: child.id,
-      uSlot: existingPlacement?.uSlot ?? nextRackUSlot(rack, rackDeviceId),
-      label: child.tag || existingPlacement?.label || deviceDisplayName(child),
-    };
-    return {
-      ...rack,
-      placements: [...rack.placements, placement],
-      updatedAt: now,
-    };
+function normalizeProject(p: Project): Project {
+  return projectWithGeneratedCableLabels({
+    ...p,
+    meta: {
+      projectName: p.meta?.projectName ?? "Untitled Project",
+      projectNumber: p.meta?.projectNumber ?? "",
+      client: p.meta?.client ?? "",
+      location: p.meta?.location ?? "",
+      drawnBy: p.meta?.drawnBy ?? "",
+      date: p.meta?.date ?? new Date().toISOString(),
+      revision: p.meta?.revision ?? "0",
+      summary: p.meta?.summary,
+    },
+    sheets: (p.sheets ?? []).map(normalizeSheet),
+    racks: p.racks ?? [],
+    bidDefaults: { ...defaultBidDefaults, ...(p.bidDefaults ?? {}) },
+    reports: p.reports && p.reports.length > 0 ? p.reports : buildStarterTemplates(),
+    diagrams: p.diagrams ?? [],
+    connections: p.connections && p.connections.length > 0 ? p.connections : undefined,
+    layers: normalizeLayers(p.layers),
+    bidExportVisibility: p.bidExportVisibility ?? defaultBidExportVisibility,
+    bidLaborOverrides: normalizeBidLineLaborOverrides(p.bidLaborOverrides),
+    runLabelsVisible: p.runLabelsVisible === true,
   });
-  return { ...project, racks: nextRacks };
 }
 
-function restoredProjectState(
-  current: State,
-  project: Project,
-): Pick<
-  State,
-  | "project"
-  | "layers"
-  | "activeSheetId"
-  | "activeRackId"
-  | "activeDiagramId"
-  | "runLabelsVisible"
-  | "selectedMarkupIds"
-  | "selectedBrand"
-  | "cableRunDraft"
-> {
-  const layers = normalizeLayers(project.layers);
-  const activeSheetId = project.sheets.some((sh) => sh.id === current.activeSheetId)
-    ? current.activeSheetId
-    : project.sheets[0]?.id ?? null;
-  const racks = project.racks ?? [];
-  const activeRackId = racks.some((rack) => rack.id === current.activeRackId)
-    ? current.activeRackId
-    : racks[0]?.id ?? null;
-  const diagrams = project.diagrams ?? [];
-  const activeDiagramId = diagrams.some((diagram) => diagram.id === current.activeDiagramId)
-    ? current.activeDiagramId
-    : diagrams[0]?.id ?? null;
+function normalizeBidLineLaborOverrides(
+  overrides: BidLineLaborOverrides | undefined,
+): BidLineLaborOverrides | undefined {
+  if (!overrides) return undefined;
+  const next: BidLineLaborOverrides = {};
+  for (const [lineId, value] of Object.entries(overrides)) {
+    const laborHours = Number(value?.laborHours);
+    if (lineId && Number.isFinite(laborHours) && laborHours >= 0) {
+      next[lineId] = { laborHours };
+    }
+  }
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+function normalizeSheet(sheet: Sheet): Sheet {
+  const pageWidth = Number(sheet.pageWidth);
+  const pageHeight = Number(sheet.pageHeight);
+  const renderScale = Number(sheet.renderScale);
   return {
-    project,
-    layers,
-    activeSheetId,
-    activeRackId,
-    activeDiagramId,
-    runLabelsVisible: project.runLabelsVisible === true,
-    selectedMarkupIds: [],
-    selectedBrand: null,
-    cableRunDraft: null,
+    ...sheet,
+    id: sheet.id || uid(),
+    name: sheet.name || sheet.fileName || "Sheet",
+    fileName: sheet.fileName || sheet.name || "sheet",
+    pageWidth: Number.isFinite(pageWidth) && pageWidth > 0 ? pageWidth : 1000,
+    pageHeight: Number.isFinite(pageHeight) && pageHeight > 0 ? pageHeight : 1000,
+    renderScale: Number.isFinite(renderScale) && renderScale > 0 ? renderScale : 1,
+    markups: Array.isArray(sheet.markups) ? sheet.markups : [],
+    maskRegions: Array.isArray(sheet.maskRegions) ? sheet.maskRegions : undefined,
+  };
+}
+
+function historyAfterProjectChange(
+  history: HistoryState,
+  previousProject: Project | null,
+): HistoryState {
+  if (!previousProject) return history;
+  if (history.transactionDepth > 0) {
+    return {
+      ...history,
+      transactionBase: history.transactionBase ?? previousProject,
+    };
+  }
+  return {
+    ...history,
+    past: [...history.past, previousProject],
+    future: [],
+    transactionBase: null,
   };
 }
 
@@ -1484,10 +1492,12 @@ const blankProject = (meta?: Partial<ProjectMeta>): Project => {
     },
     sheets: [],
     racks: [],
-    layers: normalizeLayers(undefined),
     bidDefaults: { ...defaultBidDefaults },
     branding: stickyBranding,
     reports: buildStarterTemplates(),
+    layers: normalizeLayers(undefined),
+    bidExportVisibility: defaultBidExportVisibility,
+    runLabelsVisible: false,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -1496,6 +1506,7 @@ const blankProject = (meta?: Partial<ProjectMeta>): Project => {
 export const useProjectStore = create<State>()(
   subscribeWithSelector((set, get) => ({
     project: null,
+    history: emptyHistory(),
     view: "sheets",
     activeSheetId: null,
     activeRackId: null,
@@ -1508,19 +1519,21 @@ export const useProjectStore = create<State>()(
     activeFiberStrandCount: DEFAULT_FIBER_STRAND_COUNT,
     selectedMarkupIds: [],
     selectedBrand: null,
-    layers: normalizeLayers(undefined),
+    layers: DEFAULT_LAYERS.map((l) => ({ ...l })),
     cursor: null,
-    viewport: { scale: 1, x: 0, y: 0 },
+    viewport: DEFAULT_CANVAS_VIEWPORT,
+    sheetViewports: {},
     snapEnabled: true,
     orthoEnabled: false,
     coverageVisible: true,
-    runLabelsVisible: false,
     brandPreviewEnabled: true,
     pagePreview: null,
     freehandColor: "#F4B740",
     freehandThickness: 2,
     freehandErasing: false,
     cableRunDraft: null,
+    cableRunBulkBranch: null,
+    runLabelsVisible: false,
     qualityMode: "balanced",
     ingestProgress: { total: 0, done: 0, failed: 0 },
     bidPanelOpen: false,
@@ -1528,96 +1541,129 @@ export const useProjectStore = create<State>()(
     settingsOpen: false,
     commandPaletteOpen: false,
     toasts: [],
-    history: emptyHistory(),
+    lockMoveHint: null,
 
     newProject: (meta) =>
-      set({
-        project: blankProject(meta),
+      set(() => {
+        const project = normalizeProject(blankProject(meta));
+        return {
+        project,
         activeSheetId: null,
+        activeRackId: null,
+        activeDiagramId: null,
+        viewport: DEFAULT_CANVAS_VIEWPORT,
+        sheetViewports: {},
+        layers: normalizeLayers(project.layers),
+        runLabelsVisible: project.runLabelsVisible === true,
         selectedMarkupIds: [],
         cableRunDraft: null,
-        runLabelsVisible: false,
-        history: emptyHistory(true),
+        cableRunBulkBranch: null,
+        lockMoveHint: null,
+        history: emptyHistory(),
+      };
       }),
 
-    loadProject: (p) => {
-      const layers = normalizeLayers(p.layers);
-      set({
-        // Backfill arrays for projects saved before each feature
-        // landed, so existing records keep opening cleanly.
-        project: {
-          ...p,
-          layers,
-          racks: p.racks ?? [],
-          reports: p.reports && p.reports.length > 0 ? p.reports : buildStarterTemplates(),
-          diagrams: p.diagrams ?? [],
-        },
-        layers,
-        activeSheetId: p.sheets[0]?.id ?? null,
-        activeRackId: (p.racks?.[0]?.id) ?? null,
-        activeDiagramId: p.diagrams?.[0]?.id ?? null,
+    loadProject: (p) =>
+      set(() => {
+        // Backfill arrays and non-persisted UI state for projects saved
+        // before each feature landed, so old records keep opening cleanly.
+        const project = normalizeProject(p);
+        const activeSheetId = project.sheets[0]?.id ?? null;
+        const restoredViewport = activeSheetId
+          ? loadCanvasViewport(project.id, activeSheetId)
+          : null;
+        return {
+        project,
+        activeSheetId,
+        activeRackId: (project.racks?.[0]?.id) ?? null,
+        activeDiagramId: project.diagrams?.[0]?.id ?? null,
+        viewport: restoredViewport ?? DEFAULT_CANVAS_VIEWPORT,
+        sheetViewports: restoredViewport && activeSheetId ? { [activeSheetId]: restoredViewport } : {},
+        layers: normalizeLayers(project.layers),
+        runLabelsVisible: project.runLabelsVisible === true,
         selectedMarkupIds: [],
         cableRunDraft: null,
-        runLabelsVisible: p.runLabelsVisible === true,
-        history: emptyHistory(true),
-      });
-    },
+        cableRunBulkBranch: null,
+        lockMoveHint: null,
+        history: emptyHistory(),
+      };
+      }),
 
     undo: () =>
       set((s) => {
-        if (!s.project || s.history.past.length === 0) return s;
-        const previous = s.history.past[s.history.past.length - 1];
+        const previous = s.history.past.at(-1);
+        if (!previous || !s.project) return s;
         return {
-          ...restoredProjectState(s, previous),
+          project: previous,
+          runLabelsVisible: previous.runLabelsVisible === true,
           history: {
+            ...s.history,
             past: s.history.past.slice(0, -1),
             future: [s.project, ...s.history.future],
             transactionBase: null,
-            paused: true,
+            transactionDepth: 0,
           },
+          cableRunDraft: null,
+          cableRunBulkBranch: null,
+          lockMoveHint: null,
+          selectedMarkupIds: [],
         };
       }),
 
     redo: () =>
       set((s) => {
-        if (!s.project || s.history.future.length === 0) return s;
         const next = s.history.future[0];
+        if (!next || !s.project) return s;
         return {
-          ...restoredProjectState(s, next),
+          project: next,
+          runLabelsVisible: next.runLabelsVisible === true,
           history: {
-            past: pushHistorySnapshot(s.history.past, s.project),
+            ...s.history,
+            past: [...s.history.past, s.project],
             future: s.history.future.slice(1),
             transactionBase: null,
-            paused: true,
+            transactionDepth: 0,
           },
-        };
-      }),
-
-    beginHistoryTransaction: () =>
-      set((s) =>
-        s.project && !s.history.transactionBase
-          ? { history: { ...s.history, transactionBase: s.project } }
-          : s,
-      ),
-
-    endHistoryTransaction: () =>
-      set((s) => {
-        const base = s.history.transactionBase;
-        if (!base) return s;
-        if (!s.project || s.project === base) {
-          return { history: { ...s.history, transactionBase: null } };
-        }
-        return {
-          history: {
-            past: pushHistorySnapshot(s.history.past, base),
-            future: [],
-            transactionBase: null,
-            paused: false,
-          },
+          cableRunDraft: null,
+          cableRunBulkBranch: null,
+          lockMoveHint: null,
+          selectedMarkupIds: [],
         };
       }),
 
     clearHistory: () => set({ history: emptyHistory() }),
+
+    beginHistoryTransaction: () =>
+      set((s) => ({
+        history: {
+          ...s.history,
+          transactionDepth: s.history.transactionDepth + 1,
+          transactionBase: s.history.transactionBase ?? s.project,
+        },
+      })),
+
+    endHistoryTransaction: () =>
+      set((s) => {
+        const depth = Math.max(0, s.history.transactionDepth - 1);
+        if (depth > 0) {
+          return { history: { ...s.history, transactionDepth: depth } };
+        }
+        const base = s.history.transactionBase;
+        if (!base || base === s.project) {
+          return {
+            history: { ...s.history, transactionDepth: 0, transactionBase: null },
+          };
+        }
+        return {
+          history: {
+            ...s.history,
+            past: [...s.history.past, base],
+            future: [],
+            transactionDepth: 0,
+            transactionBase: null,
+          },
+        };
+      }),
 
     updateProjectMeta: (patch) =>
       set((s) => ({
@@ -1714,6 +1760,25 @@ export const useProjectStore = create<State>()(
         };
       }),
 
+    setBidLineLaborOverride: (lineId, laborHours) =>
+      set((s) => {
+        if (!s.project) return s;
+        const overrides = { ...(s.project.bidLaborOverrides ?? {}) };
+        if (laborHours === null) {
+          delete overrides[lineId];
+        } else if (Number.isFinite(laborHours) && laborHours >= 0) {
+          overrides[lineId] = { laborHours };
+        }
+        return {
+          project: {
+            ...s.project,
+            bidLaborOverrides:
+              Object.keys(overrides).length > 0 ? overrides : undefined,
+            updatedAt: Date.now(),
+          },
+        };
+      }),
+
     applyBulkPriceMultiplier: (target, multiplier) =>
       set((s) => {
         if (!s.project || !isFinite(multiplier) || multiplier <= 0) return s;
@@ -1779,8 +1844,10 @@ export const useProjectStore = create<State>()(
       set((s) => {
         if (!s.project) return s;
         const sheets = [...s.project.sheets, sheet];
+        const project = { ...s.project, sheets, updatedAt: Date.now() };
         return {
-          project: { ...s.project, sheets, updatedAt: Date.now() },
+          project,
+          history: historyAfterProjectChange(s.history, s.project),
           activeSheetId: s.activeSheetId ?? sheet.id,
         };
       }),
@@ -1791,19 +1858,44 @@ export const useProjectStore = create<State>()(
         const sheets = s.project.sheets.filter((sh) => sh.id !== id);
         const newActive =
           s.activeSheetId === id ? (sheets[0]?.id ?? null) : s.activeSheetId;
+        const restoredViewport =
+          newActive && s.project
+            ? (s.sheetViewports[newActive] ?? loadCanvasViewport(s.project.id, newActive))
+            : null;
         return {
           project: { ...s.project, sheets, updatedAt: Date.now() },
           activeSheetId: newActive,
+          viewport: restoredViewport ?? DEFAULT_CANVAS_VIEWPORT,
+          sheetViewports:
+            restoredViewport && newActive
+              ? { ...s.sheetViewports, [newActive]: restoredViewport }
+              : s.sheetViewports,
         };
       }),
 
     setActiveSheet: (id) =>
-      set({ activeSheetId: id, selectedMarkupIds: [], cableRunDraft: null }),
+      set((s) => {
+        const restoredViewport =
+          id && s.project
+            ? (s.sheetViewports[id] ?? loadCanvasViewport(s.project.id, id))
+            : null;
+        return {
+          activeSheetId: id,
+          selectedMarkupIds: [],
+          cableRunDraft: null,
+          viewport: restoredViewport ?? DEFAULT_CANVAS_VIEWPORT,
+          sheetViewports:
+            restoredViewport && id
+              ? { ...s.sheetViewports, [id]: restoredViewport }
+              : s.sheetViewports,
+        };
+      }),
 
     updateSheet: (id, patch) =>
       set((s) => {
         if (!s.project) return s;
         return {
+          history: historyAfterProjectChange(s.history, s.project),
           project: {
             ...s.project,
             sheets: s.project.sheets.map((sh) =>
@@ -1888,7 +1980,6 @@ export const useProjectStore = create<State>()(
             ),
             updatedAt: Date.now(),
           },
-          history: { ...s.history, paused: true },
         };
       }),
 
@@ -2204,19 +2295,24 @@ export const useProjectStore = create<State>()(
 
       const finalRoute = [...route, endpoint];
       const cableMarkupId = uid();
-      const cableMarkup = buildCableRunMarkup(
-        cableMarkupId,
-        s.activeCableId,
-        finalRoute,
-        s.activeCableId === "conduit"
-          ? {
-              conduitType: s.activeConduitType,
-              conduitSize: s.activeConduitSize,
-            }
-          : isFiberCableId(s.activeCableId)
-            ? { fiberStrandCount: s.activeFiberStrandCount }
-          : undefined,
-      );
+      const cableMarkup = assignGeneratedCableLabels(
+        [
+          buildCableRunMarkup(
+            cableMarkupId,
+            s.activeCableId,
+            finalRoute,
+            s.activeCableId === "conduit"
+              ? {
+                  conduitType: s.activeConduitType,
+                  conduitSize: s.activeConduitSize,
+                }
+              : isFiberCableId(s.activeCableId)
+                ? { fiberStrandCount: s.activeFiberStrandCount }
+              : undefined,
+          ),
+        ],
+        s.project,
+      )[0];
       const connection = buildCableRunConnection(
         uid(),
         cableMarkupId,
@@ -2269,19 +2365,24 @@ export const useProjectStore = create<State>()(
 
       const finalRoute = [...route, endpoint];
       const cableMarkupId = uid();
-      const cableMarkup = buildCableRunMarkup(
-        cableMarkupId,
-        s.activeCableId,
-        finalRoute,
-        s.activeCableId === "conduit"
-          ? {
-              conduitType: s.activeConduitType,
-              conduitSize: s.activeConduitSize,
-            }
-          : isFiberCableId(s.activeCableId)
-            ? { fiberStrandCount: s.activeFiberStrandCount }
-          : undefined,
-      );
+      const cableMarkup = assignGeneratedCableLabels(
+        [
+          buildCableRunMarkup(
+            cableMarkupId,
+            s.activeCableId,
+            finalRoute,
+            s.activeCableId === "conduit"
+              ? {
+                  conduitType: s.activeConduitType,
+                  conduitSize: s.activeConduitSize,
+                }
+              : isFiberCableId(s.activeCableId)
+                ? { fiberStrandCount: s.activeFiberStrandCount }
+              : undefined,
+          ),
+        ],
+        s.project,
+      )[0];
       const connection = buildCableRunConnection(
         uid(),
         cableMarkupId,
@@ -2327,6 +2428,133 @@ export const useProjectStore = create<State>()(
       }
       return created;
     },
+    beginCableRunBulkBranch: (route, sourceCableMarkupId) =>
+      set((s) => {
+        if (!s.project || !s.activeSheetId) return s;
+        const activeRoute = route === undefined ? (s.cableRunDraft?.points ?? null) : route;
+        return {
+          cableRunBulkBranch: {
+            route: activeRoute ? [...activeRoute] : null,
+            targetEndpoints: [],
+            sourceCableMarkupId,
+            baseProject: s.project,
+            previewCableMarkupIds: [],
+          },
+        };
+      }),
+    toggleCableRunBulkBranchTarget: (endpoint) => {
+      const s = get();
+      const bulk = s.cableRunBulkBranch;
+      if (!s.project || !s.activeSheetId || !s.activeCableId || !bulk) return 0;
+      const route = bulk.route ?? [];
+      if (route.length === 0) {
+        set({
+          cableRunBulkBranch: {
+            ...bulk,
+            route: [endpoint],
+          },
+        });
+        return 0;
+      }
+      const exists = bulk.targetEndpoints.some((target) =>
+        cableRunEndpointKey(target) === cableRunEndpointKey(endpoint),
+      );
+      if (exists) return bulk.targetEndpoints.length;
+
+      const finalRoute = [...route, endpoint];
+      const cableMarkupId = uid();
+      const cableMarkup = assignGeneratedCableLabels(
+        [
+          buildCableRunMarkup(
+            cableMarkupId,
+            s.activeCableId,
+            finalRoute,
+            s.activeCableId === "conduit"
+              ? {
+                  conduitType: s.activeConduitType,
+                  conduitSize: s.activeConduitSize,
+                }
+              : isFiberCableId(s.activeCableId)
+                ? { fiberStrandCount: s.activeFiberStrandCount }
+              : undefined,
+          ),
+        ],
+        s.project,
+      )[0];
+      const connection = buildCableRunConnection(
+        uid(),
+        cableMarkupId,
+        s.activeCableId,
+        finalRoute,
+      );
+      const targetLabel = endpoint.label ?? endpoint.deviceTag;
+
+      set((cur) => {
+        if (!cur.project || !cur.activeSheetId || !cur.cableRunBulkBranch) return cur;
+        return {
+          project: {
+            ...cur.project,
+            sheets: cur.project.sheets.map((sh) =>
+              sh.id === cur.activeSheetId
+                ? {
+                    ...sh,
+                    markups: sh.markups.map((m) =>
+                      m.kind === "cable" &&
+                      m.id === cur.cableRunBulkBranch?.sourceCableMarkupId &&
+                      targetLabel
+                        ? {
+                            ...m,
+                            servedDevices: Array.from(
+                              new Set([...(m.servedDevices ?? []), targetLabel]),
+                            ),
+                          }
+                        : m,
+                    ).concat(cableMarkup),
+                  }
+                : sh,
+            ),
+            connections: connection
+              ? [...(cur.project.connections ?? []), connection]
+              : cur.project.connections,
+            updatedAt: Date.now(),
+          },
+          cableRunBulkBranch: {
+            ...cur.cableRunBulkBranch,
+            targetEndpoints: [...cur.cableRunBulkBranch.targetEndpoints, endpoint],
+            previewCableMarkupIds: [
+              ...cur.cableRunBulkBranch.previewCableMarkupIds,
+              cableMarkupId,
+            ],
+          },
+        };
+      });
+      return get().cableRunBulkBranch?.targetEndpoints.length ?? bulk.targetEndpoints.length;
+    },
+    commitCableRunBulkBranch: () => {
+      const bulk = get().cableRunBulkBranch;
+      if (!bulk) return 0;
+      const count = bulk.targetEndpoints.length;
+      set((s) => {
+        if (!s.cableRunBulkBranch) return s;
+        return {
+          cableRunBulkBranch: null,
+          history:
+            count > 0
+              ? historyAfterProjectChange(s.history, s.cableRunBulkBranch.baseProject)
+              : s.history,
+        };
+      });
+      return count;
+    },
+    cancelCableRunBulkBranch: () =>
+      set((s) =>
+        s.cableRunBulkBranch
+          ? {
+              project: s.cableRunBulkBranch.baseProject,
+              cableRunBulkBranch: null,
+            }
+          : s,
+      ),
     appendCableRunPath: (points) => {
       const s = get();
       if (!s.activeCableId || !s.project || !s.activeSheetId) return null;
@@ -2377,19 +2605,24 @@ export const useProjectStore = create<State>()(
       }
 
       const cableMarkupId = uid();
-      const cableMarkup = buildCableRunMarkup(
-        cableMarkupId,
-        s.activeCableId,
-        route,
-        s.activeCableId === "conduit"
-          ? {
-              conduitType: s.activeConduitType,
-              conduitSize: s.activeConduitSize,
-            }
-          : isFiberCableId(s.activeCableId)
-            ? { fiberStrandCount: s.activeFiberStrandCount }
-          : undefined,
-      );
+      const cableMarkup = assignGeneratedCableLabels(
+        [
+          buildCableRunMarkup(
+            cableMarkupId,
+            s.activeCableId,
+            route,
+            s.activeCableId === "conduit"
+              ? {
+                  conduitType: s.activeConduitType,
+                  conduitSize: s.activeConduitSize,
+                }
+              : isFiberCableId(s.activeCableId)
+                ? { fiberStrandCount: s.activeFiberStrandCount }
+              : undefined,
+          ),
+        ],
+        s.project,
+      )[0];
       const connection = buildCableRunConnection(
         uid(),
         cableMarkupId,
@@ -2432,12 +2665,17 @@ export const useProjectStore = create<State>()(
     addMarkup: (m) =>
       set((s) => {
         if (!s.project || !s.activeSheetId) return s;
+        const markup =
+          m.kind === "cable" && !m.physicalLabel?.trim()
+            ? assignGeneratedCableLabels([m], s.project)[0]
+            : m;
         return {
+          history: historyAfterProjectChange(s.history, s.project),
           project: {
             ...s.project,
             sheets: s.project.sheets.map((sh) =>
               sh.id === s.activeSheetId
-                ? { ...sh, markups: [...sh.markups, m] }
+                ? { ...sh, markups: [...sh.markups, markup] }
                 : sh,
             ),
             updatedAt: Date.now(),
@@ -2448,219 +2686,168 @@ export const useProjectStore = create<State>()(
     updateMarkup: (id, patch) =>
       set((s) => {
         if (!s.project || !s.activeSheetId) return s;
-        let nextProject: Project = s.project;
-        return {
-          project: (() => {
-            const sheets = s.project.sheets.map((sh) => {
-              if (sh.id !== s.activeSheetId) return sh;
-              const device = sh.markups.find(
-                (m): m is DeviceMarkup => m.id === id && m.kind === "device",
-              );
-              const movesContainer =
-                device &&
-                isContainerDevice(device) &&
-                (typeof (patch as Partial<DeviceMarkup>).x === "number" ||
-                  typeof (patch as Partial<DeviceMarkup>).y === "number");
-              const nextX =
-                typeof (patch as Partial<DeviceMarkup>).x === "number"
-                  ? (patch as Partial<DeviceMarkup>).x!
-                  : device?.x;
-              const nextY =
-                typeof (patch as Partial<DeviceMarkup>).y === "number"
-                  ? (patch as Partial<DeviceMarkup>).y!
-                  : device?.y;
-              const dx = movesContainer && device && nextX !== undefined ? nextX - device.x : 0;
-              const dy = movesContainer && device && nextY !== undefined ? nextY - device.y : 0;
-              const movedDevices = new Map<string, MovedDeviceAnchor>();
-              if (
-                device &&
-                typeof nextX === "number" &&
-                typeof nextY === "number" &&
-                (nextX !== device.x || nextY !== device.y)
-              ) {
-                movedDevices.set(device.id, {
-                  previous: device,
-                  target: { x: nextX, y: nextY },
-                  label: routeInfrastructureLabel(device) ?? deviceLabel(device),
-                });
-                if (movesContainer) {
-                  for (const m of sh.markups) {
-                    if (
-                      m.kind === "device" &&
-                      m.parentId === id &&
-                      !m.locked
-                    ) {
-                      movedDevices.set(m.id, {
-                        previous: m,
-                        target: { x: m.x + dx, y: m.y + dy },
-                        label: routeInfrastructureLabel(m) ?? deviceLabel(m),
-                      });
-                    }
-                  }
+        const project = syncRackSystems({
+          ...s.project,
+          sheets: s.project.sheets.map((sh) =>
+            sh.id === s.activeSheetId
+              ? {
+                  ...sh,
+                  markups: sh.markups.map((m) =>
+                    m.id === id ? ({ ...m, ...patch } as Markup) : m,
+                  ),
                 }
-              }
-              return {
-                ...sh,
-                markups: sh.markups.map((m) => {
-                  if (m.id === id) return ({ ...m, ...patch } as Markup);
-                  if (
-                    movesContainer &&
-                    m.kind === "device" &&
-                    m.parentId === id &&
-                    !m.locked
-                  ) {
-                    return { ...m, x: m.x + dx, y: m.y + dy };
-                  }
-                  if (m.kind === "cable" && !m.locked && movedDevices.size > 0) {
-                    return cableWithMovedDeviceAnchors(m, movedDevices);
-                  }
-                  return m;
-                }),
-              };
-            });
-            nextProject = { ...s.project, sheets, updatedAt: Date.now() };
-            const sheet = sheets.find((sh) => sh.id === s.activeSheetId);
-            const nextDevice = sheet?.markups.find(
-              (m): m is DeviceMarkup => m.kind === "device" && m.id === id,
-            );
-            if (sheet && nextDevice) {
-              nextProject = syncRackSystemForNestedDevice(nextProject, sheet, nextDevice);
-            }
-            return nextProject;
-          })(),
+              : sh,
+          ),
+          updatedAt: Date.now(),
+        });
+        return {
+          history: historyAfterProjectChange(s.history, s.project),
+          project,
         };
       }),
 
     moveDeviceMarkup: (id, x, y) =>
       set((s) => {
         if (!s.project || !s.activeSheetId) return s;
-        return {
-          project: (() => {
-            const sheets = s.project.sheets.map((sh) => {
-              if (sh.id !== s.activeSheetId) return sh;
-              const device = sh.markups.find(
-                (m): m is DeviceMarkup => m.id === id && m.kind === "device",
-              );
-              if (!device) return sh;
-              const attachment = device.attachedRunEndpoint;
-              const attachedCable = attachment
-                ? sh.markups.find(
-                    (m): m is CableMarkup =>
-                      m.kind === "cable" &&
-                      m.id === attachment.cableMarkupId,
-                  )
-                : null;
-              const pinnedByLockedCable =
-                !attachedCable?.locked && deviceHasLockedCableAnchor(sh.markups, device);
-              const snap = isRouteInfrastructureMarkup(device) && !pinnedByLockedCable
-                ? nearestCableRunEndpoint(sh.markups, { x, y }, undefined, {
-                    ignoreEndpoint: ({ cable, endpoint }) =>
-                      cableEndpointBelongsToDevice(cable, endpoint, device),
-                  })
-                : null;
-              const unslottedTarget =
-                attachedCable && attachedCable.locked
-                  ? endpointPoint(attachedCable, attachment!.endpoint)
-                  : pinnedByLockedCable
-                    ? { x: device.x, y: device.y }
-                  : snap
-                    ? { x: snap.x, y: snap.y }
-                    : { x, y };
-              const nestingParent = nearestContainerForDevice(
-                sh.markups,
-                device,
-                unslottedTarget,
-              );
-              const target = nestingParent
-                ? nestedSlotPoint(sh.markups, nestingParent, device)
-                : unslottedTarget;
-              const dx = target.x - device.x;
-              const dy = target.y - device.y;
-              const nextAttachment = snap
-                ? { cableMarkupId: snap.cable.id, endpoint: snap.endpoint }
-                : attachment;
-              const label = routeInfrastructureLabel(device);
-              const movedDevices = new Map<string, MovedDeviceAnchor>();
-              movedDevices.set(device.id, {
-                previous: device,
-                target,
-                label: label ?? deviceLabel(device),
-              });
-              if (isContainerDevice(device)) {
-                for (const m of sh.markups) {
-                  if (
-                    m.kind === "device" &&
-                    m.parentId === id &&
-                    !m.locked &&
-                    !deviceHasLockedCableAnchor(sh.markups, m)
-                  ) {
-                    movedDevices.set(m.id, {
-                      previous: m,
-                      target: { x: m.x + dx, y: m.y + dy },
-                      label: routeInfrastructureLabel(m) ?? deviceLabel(m),
-                    });
-                  }
-                }
-              }
+        const sheet = s.project.sheets.find((sh) => sh.id === s.activeSheetId);
+        const device = sheet?.markups.find(
+          (m): m is DeviceMarkup => m.id === id && m.kind === "device",
+        );
+        if (!sheet || !device) return s;
+        const parent = device.parentId
+          ? sheet.markups.find(
+              (m): m is DeviceMarkup => m.kind === "device" && m.id === device.parentId,
+            )
+          : null;
+        if (device.locked || parent?.locked) {
+          const now = Date.now();
+          const lockMoveHint =
+            s.lockMoveHint && now - s.lockMoveHint.shownAt < 1400
+              ? s.lockMoveHint
+              : {
+                  message: "Devices are locked. Unlock to move.",
+                  shownAt: now,
+                  pulseKey: now,
+                };
+          return { ...s, lockMoveHint };
+        }
 
-              return {
-                ...sh,
-                markups: sh.markups.map((m) => {
-                  if (m.id === id && m.kind === "device") {
+        const attachedRunIndexes = deviceAttachedRunIndexes(sheet.markups, device);
+        const lockedAttachment = attachedRunIndexes.some(({ cable }) => cable.locked);
+        if (lockedAttachment) {
+          get().pushToast("error", "Unlock attached cable runs before moving this device");
+          return s;
+        }
+
+        const nestingParent = nearestContainerForDevice(sheet.markups, device, { x, y });
+        const nestedTarget = nestingParent
+          ? nestedSlotPoint(sheet.markups, nestingParent, {
+              ...device,
+              x,
+              y,
+              parentId: nestingParent.id,
+            })
+          : null;
+        const hasCableAttachments = attachedRunIndexes.length > 0;
+        const snap =
+          isRouteInfrastructureMarkup(device) && !hasCableAttachments
+            ? nearestCableRunEndpoint(sheet.markups, { x, y })
+            : null;
+        const target = snap ? { x: snap.x, y: snap.y } : (nestedTarget ?? { x, y });
+        const nextAttachment = snap
+          ? { cableMarkupId: snap.cable.id, endpoint: snap.endpoint }
+          : undefined;
+        const movingParent = { ...device, x: target.x, y: target.y };
+        const movedChildren = nestedChildren(sheet.markups, id).map((child) => ({
+          child,
+          target: nestedSlotPoint(sheet.markups, movingParent, child),
+        }));
+        const movedDeviceTargets = new Map<string, { x: number; y: number; device: DeviceMarkup }>();
+        movedDeviceTargets.set(id, { x: target.x, y: target.y, device });
+        for (const { child, target: childTarget } of movedChildren) {
+          movedDeviceTargets.set(child.id, { ...childTarget, device: child });
+        }
+
+        const nextProject = syncRackSystems({
+          ...s.project,
+          sheets: s.project.sheets.map((sh) => {
+            if (sh.id !== s.activeSheetId) return sh;
+            return {
+              ...sh,
+              markups: sh.markups.map((m) => {
+                if (m.kind === "device") {
+                  const moved = movedDeviceTargets.get(m.id);
+                  if (!moved) return m;
+                  if (m.id === id) {
                     return {
                       ...m,
-                      x: target.x,
-                      y: target.y,
-                      parentId: nestingParent?.id ?? m.parentId,
+                      x: moved.x,
+                      y: moved.y,
+                      parentId: nestingParent?.id,
                       attachedRunEndpoint: nextAttachment,
                     };
                   }
-                  if (
-                    isContainerDevice(device) &&
-                    m.kind === "device" &&
-                    m.parentId === id &&
-                    !m.locked &&
-                    !deviceHasLockedCableAnchor(sh.markups, m)
-                  ) {
-                    return {
-                      ...m,
-                      x: m.x + dx,
-                      y: m.y + dy,
-                    };
-                  }
-                  if (
-                    m.kind === "cable" &&
-                    !m.locked
-                  ) {
-                    let nextCable = cableWithMovedDeviceAnchors(m, movedDevices);
-                    if (nextAttachment && m.id === nextAttachment.cableMarkupId) {
-                      nextCable = cableWithEndpoint(
-                        nextCable,
-                        nextAttachment.endpoint,
-                        target.x,
-                        target.y,
-                        label ?? deviceLabel(device),
-                        device,
-                      );
-                    }
-                    return nextCable;
-                  }
-                  return m;
-                }),
-              };
-            });
-            let nextProject: Project = { ...s.project, sheets, updatedAt: Date.now() };
-            const sheet = sheets.find((sh) => sh.id === s.activeSheetId);
-            const nextDevice = sheet?.markups.find(
-              (m): m is DeviceMarkup => m.kind === "device" && m.id === id,
-            );
-            if (sheet && nextDevice) {
-              nextProject = syncRackSystemForNestedDevice(nextProject, sheet, nextDevice);
-            }
-            return nextProject;
-          })(),
+                  return { ...m, x: moved.x, y: moved.y };
+                }
+                if (m.kind !== "cable") return m;
+                let nextCable = m;
+                for (const [deviceId, moved] of movedDeviceTargets) {
+                  nextCable = cableWithMovedAttachment(
+                    nextCable,
+                    deviceId,
+                    moved.device.tag,
+                    moved.x,
+                    moved.y,
+                  );
+                }
+                if (snap && m.id === snap.cable.id) {
+                  nextCable = cableWithEndpoint(
+                    nextCable,
+                    snap.endpoint,
+                    target.x,
+                    target.y,
+                    routeInfrastructureLabel(device),
+                  );
+                }
+                return nextCable;
+              }),
+            };
+          }),
+          updatedAt: Date.now(),
+        });
+        const withAssignments = nestingParent
+          ? autoAssignContainerProject(nextProject, nestingParent.id)
+          : nextProject;
+        return {
+          history: historyAfterProjectChange(s.history, s.project),
+          project: withAssignments,
         };
       }),
+
+    setAllDeviceMarkupsLocked: (locked) => {
+      let changed = 0;
+      set((s) => {
+        if (!s.project) return s;
+        const project = {
+          ...s.project,
+          sheets: s.project.sheets.map((sh) => ({
+            ...sh,
+            markups: sh.markups.map((m) => {
+              if (m.kind !== "device" || m.locked === locked) return m;
+              changed += 1;
+              return { ...m, locked };
+            }),
+          })),
+          updatedAt: Date.now(),
+        };
+        if (changed === 0) return s;
+        return {
+          history: historyAfterProjectChange(s.history, s.project),
+          project,
+        };
+      });
+      return changed;
+    },
 
     attachRouteInfrastructureToRun: (deviceId, cableMarkupId, endpoint) =>
       set((s) => {
@@ -2691,7 +2878,7 @@ export const useProjectStore = create<State>()(
                     };
                   }
                   if (m.id === cableMarkupId && m.kind === "cable") {
-                    return cableWithEndpoint(m, endpoint, p.x, p.y, label, device);
+                    return cableWithEndpoint(m, endpoint, p.x, p.y, label);
                   }
                   return m;
                 }),
@@ -2755,16 +2942,7 @@ export const useProjectStore = create<State>()(
             ...s.project,
             sheets: s.project.sheets.map((sh) =>
               sh.id === s.activeSheetId
-                ? {
-                    ...sh,
-                    markups: sh.markups
-                      .filter((m) => m.id !== id)
-                      .map((m) =>
-                        m.kind === "device" && m.parentId === id
-                          ? { ...m, parentId: undefined }
-                          : m,
-                      ),
-                  }
+                ? { ...sh, markups: sh.markups.filter((m) => m.id !== id) }
                 : sh,
             ),
             updatedAt: Date.now(),
@@ -2787,13 +2965,7 @@ export const useProjectStore = create<State>()(
               sh.id === s.activeSheetId
                 ? {
                     ...sh,
-                    markups: sh.markups
-                      .filter((m) => !ids.has(m.id))
-                      .map((m) =>
-                        m.kind === "device" && m.parentId && ids.has(m.parentId)
-                          ? { ...m, parentId: undefined }
-                          : m,
-                      ),
+                    markups: sh.markups.filter((m) => !ids.has(m.id)),
                     maskRegions: (sh.maskRegions ?? []).filter(
                       (m) => !ids.has(m.id),
                     ),
@@ -2824,7 +2996,7 @@ export const useProjectStore = create<State>()(
           layers,
           project: s.project
             ? { ...s.project, layers, updatedAt: Date.now() }
-            : null,
+            : s.project,
         };
       }),
 
@@ -2835,24 +3007,24 @@ export const useProjectStore = create<State>()(
           layers,
           project: s.project
             ? { ...s.project, layers, updatedAt: Date.now() }
-            : null,
+            : s.project,
         };
       }),
 
-    moveLayer: (id, direction) =>
+    moveLayer: (id, dir) =>
       set((s) => {
-        const index = s.layers.findIndex((l) => l.id === id);
-        if (index < 0) return s;
-        const nextIndex = direction === "up" ? index - 1 : index + 1;
-        if (nextIndex < 0 || nextIndex >= s.layers.length) return s;
         const layers = [...s.layers];
+        const index = layers.findIndex((l) => l.id === id);
+        if (index < 0) return s;
+        const nextIndex = dir === "up" ? index - 1 : index + 1;
+        if (nextIndex < 0 || nextIndex >= layers.length) return s;
         const [layer] = layers.splice(index, 1);
         layers.splice(nextIndex, 0, layer);
         return {
           layers,
           project: s.project
             ? { ...s.project, layers, updatedAt: Date.now() }
-            : null,
+            : s.project,
         };
       }),
 
@@ -2883,6 +3055,7 @@ export const useProjectStore = create<State>()(
       set((s) => {
         if (!s.project) return s;
         return {
+          history: historyAfterProjectChange(s.history, s.project),
           project: {
             ...s.project,
             connections: [...(s.project.connections ?? []), conn],
@@ -2894,14 +3067,22 @@ export const useProjectStore = create<State>()(
     updateConnection: (id, patch) =>
       set((s) => {
         if (!s.project) return s;
+        const previousConn = (s.project.connections ?? []).find((c) => c.id === id);
+        if (!previousConn) return s;
+        const nextConn = completeInternalEndpoint(s.project, {
+          ...previousConn,
+          ...patch,
+        });
+        const projectWithConnection = {
+          ...s.project,
+          connections: (s.project.connections ?? []).map((c) =>
+            c.id === id ? nextConn : c,
+          ),
+          updatedAt: Date.now(),
+        };
         return {
-          project: {
-            ...s.project,
-            connections: (s.project.connections ?? []).map((c) =>
-              c.id === id ? { ...c, ...patch } : c,
-            ),
-            updatedAt: Date.now(),
-          },
+          history: historyAfterProjectChange(s.history, s.project),
+          project: reanchorConnectionCable(projectWithConnection, previousConn, nextConn),
         };
       }),
 
@@ -2909,6 +3090,7 @@ export const useProjectStore = create<State>()(
       set((s) => {
         if (!s.project) return s;
         return {
+          history: historyAfterProjectChange(s.history, s.project),
           project: {
             ...s.project,
             connections: (s.project.connections ?? []).filter((c) => c.id !== id),
@@ -2916,6 +3098,21 @@ export const useProjectStore = create<State>()(
           },
         };
       }),
+
+    autoAssignContainerInternalConnections: (containerId) => {
+      let assigned = 0;
+      set((s) => {
+        if (!s.project) return s;
+        const project = autoAssignContainerProject(s.project, containerId);
+        assigned = countInternalAssignments(project, s.project);
+        if (assigned === 0) return s;
+        return {
+          history: historyAfterProjectChange(s.history, s.project),
+          project,
+        };
+      });
+      return assigned;
+    },
 
     addReport: (template) =>
       set((s) => {
@@ -3144,7 +3341,17 @@ export const useProjectStore = create<State>()(
       }),
 
     setCursor: (p) => set({ cursor: p }),
-    setViewport: (v) => set((s) => ({ viewport: { ...s.viewport, ...v } })),
+    setViewport: (v) =>
+      set((s) => {
+        const viewport = normalizeCanvasViewport(v, s.viewport);
+        return {
+          viewport,
+          sheetViewports:
+            s.activeSheetId && s.project
+              ? { ...s.sheetViewports, [s.activeSheetId]: viewport }
+              : s.sheetViewports,
+        };
+      }),
     toggleSnap: () => set((s) => ({ snapEnabled: !s.snapEnabled })),
     toggleOrtho: () => set((s) => ({ orthoEnabled: !s.orthoEnabled })),
     toggleCoverageVisible: () =>
@@ -3155,13 +3362,11 @@ export const useProjectStore = create<State>()(
         return {
           runLabelsVisible: next,
           project: s.project
-            ? {
-                ...s.project,
-                runLabelsVisible: next,
-                updatedAt: Date.now(),
-              }
-            : null,
-          history: { ...s.history, paused: true },
+            ? { ...s.project, runLabelsVisible: next, updatedAt: Date.now() }
+            : s.project,
+          history: s.project
+            ? historyAfterProjectChange(s.history, s.project)
+            : s.history,
         };
       }),
     setQualityMode: (m) => set({ qualityMode: m }),
@@ -3182,6 +3387,24 @@ export const useProjectStore = create<State>()(
       })),
     dismissToast: (id) =>
       set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+    notifyLockedDeviceMoveAttempt: () =>
+      set((s) => {
+        const now = Date.now();
+        if (s.lockMoveHint && now - s.lockMoveHint.shownAt < 1400) return s;
+        return {
+          lockMoveHint: {
+            message: "Devices are locked. Unlock to move.",
+            shownAt: now,
+            pulseKey: now,
+          },
+        };
+      }),
+    clearLockMoveHint: (pulseKey) =>
+      set((s) => {
+        if (!s.lockMoveHint) return s;
+        if (pulseKey !== undefined && s.lockMoveHint.pulseKey !== pulseKey) return s;
+        return { lockMoveHint: null };
+      }),
 
     nextTag: (shortCode) => {
       const s = get();
@@ -3201,171 +3424,235 @@ export const useProjectStore = create<State>()(
   })),
 );
 
-useProjectStore.subscribe(
-  (s) => s.project,
-  (project, previousProject) => {
-    if (project === previousProject) return;
-    const { history } = useProjectStore.getState();
-    if (history.paused) {
-      useProjectStore.setState({ history: { ...history, paused: false } });
-      return;
-    }
-    if (history.transactionBase) return;
-    if (!previousProject || !project) return;
-    useProjectStore.setState({
-      history: {
-        past: pushHistorySnapshot(history.past, previousProject),
-        future: [],
-        transactionBase: null,
-        paused: false,
-      },
+function cableRunEndpointKey(endpoint: CableRunEndpoint): string {
+  return endpoint.deviceMarkupId ?? endpoint.deviceTag ?? `${endpoint.x}:${endpoint.y}`;
+}
+
+function deviceAttachedRunIndexes(markups: Markup[], device: DeviceMarkup) {
+  const hits: Array<{ cable: CableMarkup; pointIndex: number }> = [];
+  for (const markup of markups) {
+    if (markup.kind !== "cable") continue;
+    markup.pointAttachments?.forEach((attachment, pointIndex) => {
+      if (
+        attachment &&
+        (attachment.deviceMarkupId === device.id ||
+          (device.tag && attachment.deviceTag === device.tag))
+      ) {
+        hits.push({ cable: markup, pointIndex });
+      }
     });
-  },
-);
-
-interface MovedDeviceAnchor {
-  previous: DeviceMarkup;
-  target: { x: number; y: number };
-  label?: string;
-}
-
-function cableWithMovedDeviceAnchors(
-  cable: CableMarkup,
-  movedDevices: Map<string, MovedDeviceAnchor>,
-): CableMarkup {
-  if (movedDevices.size === 0 || cable.points.length < 2) return cable;
-  let nextCable = cable;
-  for (const moved of movedDevices.values()) {
-    nextCable = cableWithMovedDeviceAnchor(nextCable, moved);
   }
-  return nextCable;
+  return hits;
 }
 
-function cableWithMovedDeviceAnchor(
+function cableWithMovedAttachment(
   cable: CableMarkup,
-  moved: MovedDeviceAnchor,
+  deviceId: string,
+  deviceTag: string | undefined,
+  x: number,
+  y: number,
 ): CableMarkup {
-  const pointCount = Math.floor(cable.points.length / 2);
-  if (pointCount === 0) return cable;
-  const points = [...cable.points];
-  const attachments = normalizePointAttachments(cable, pointCount);
-  const hasAttachmentMetadata = (cable.pointAttachments?.length ?? 0) > 0;
+  if (!cable.pointAttachments?.length) return cable;
   let changed = false;
-
-  for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
-    const attachment = attachments[pointIndex];
+  const points = [...cable.points];
+  for (const [index, attachment] of cable.pointAttachments.entries()) {
     if (
-      !pointAttachmentMatches(attachment, moved.previous) &&
-      (hasAttachmentMetadata ||
-        !legacyCablePointMatches(cable, pointIndex, moved.previous))
+      attachment &&
+      (attachment.deviceMarkupId === deviceId ||
+        (deviceTag && attachment.deviceTag === deviceTag))
     ) {
-      continue;
+      points[index * 2] = x;
+      points[index * 2 + 1] = y;
+      changed = true;
     }
-    const i = pointIndex * 2;
-    points[i] = moved.target.x;
-    points[i + 1] = moved.target.y;
-    attachments[pointIndex] = {
-      ...attachment,
-      deviceMarkupId: moved.previous.id,
-      deviceTag: moved.previous.tag || attachment?.deviceTag,
-      label: moved.label ?? attachment?.label,
-      deviceId: moved.previous.deviceId,
-      category: moved.previous.category,
-      routeWaypoint:
-        attachment?.routeWaypoint ?? isRouteInfrastructureMarkup(moved.previous),
-    };
-    changed = true;
   }
+  return changed ? { ...cable, points } : cable;
+}
 
-  if (!changed) return cable;
+function completeInternalEndpoint(project: Project, conn: DeviceConnection): DeviceConnection {
+  const endpoint = conn.internalEndpoint;
+  if (!endpoint) return conn;
+  const device =
+    findDeviceById(project, endpoint.deviceId) ??
+    findDeviceByTag(project, endpoint.deviceTag);
+  if (!device) return conn;
+  const ports = effectiveDevicePorts(device.deviceId, device.instancePorts);
+  const port = endpoint.portId
+    ? findPort(ports, endpoint.portId)
+    : nextAvailableInternalPort(project, conn, device);
   return {
-    ...cable,
-    points,
-    pointAttachments: attachments,
-    ...(moved.label && pointAttachmentMatches(attachments[0], moved.previous)
-      ? { endpointA: moved.label }
-      : {}),
-    ...(moved.label &&
-    pointAttachmentMatches(attachments[pointCount - 1], moved.previous)
-      ? { endpointB: moved.label }
-      : {}),
+    ...conn,
+    internalEndpoint: {
+      ...endpoint,
+      deviceId: device.id,
+      deviceTag: device.tag,
+      ...(port ? { portId: port.id, port: port.label } : {}),
+    },
   };
 }
 
-function normalizePointAttachments(
-  cable: CableMarkup,
-  pointCount: number,
-): Array<CableRunPointAttachment | null> {
-  return Array.from({ length: pointCount }, (_, i) => cable.pointAttachments?.[i] ?? null);
-}
-
-function pointAttachmentMatches(
-  attachment: CableRunPointAttachment | null | undefined,
-  device: DeviceMarkup,
-) {
-  if (!attachment) return false;
-  if (attachment.deviceMarkupId && attachment.deviceMarkupId === device.id) return true;
-  return !!attachment.deviceTag && !!device.tag && attachment.deviceTag === device.tag;
-}
-
-function legacyCablePointMatches(
-  cable: CableMarkup,
-  pointIndex: number,
-  device: DeviceMarkup,
-) {
-  const i = pointIndex * 2;
-  const sameLocation = Math.hypot(cable.points[i] - device.x, cable.points[i + 1] - device.y) <= 1;
-  const lastIndex = Math.floor(cable.points.length / 2) - 1;
-  const tag = device.tag?.trim();
-  if (!tag) return sameLocation;
-  const endpointLabelMatch =
-    (pointIndex === 0 && labelMatchesDeviceTag(cable.endpointA, tag)) ||
-    (pointIndex === lastIndex && labelMatchesDeviceTag(cable.endpointB, tag));
-  return sameLocation || endpointLabelMatch;
-}
-
-function cablePointBelongsToDevice(
-  cable: CableMarkup,
-  pointIndex: number,
-  device: DeviceMarkup,
-) {
-  return (
-    pointAttachmentMatches(cable.pointAttachments?.[pointIndex], device) ||
-    legacyCablePointMatches(cable, pointIndex, device)
-  );
-}
-
-function cableEndpointBelongsToDevice(
-  cable: CableMarkup,
-  endpoint: CableRunEndpointKey,
-  device: DeviceMarkup,
-) {
+function reanchorConnectionCable(
+  project: Project,
+  previousConn: DeviceConnection,
+  nextConn: DeviceConnection,
+): Project {
+  if (!nextConn.cableMarkupId) return project;
+  const endpoint = nextConn.internalEndpoint ?? previousConn.internalEndpoint;
+  if (!endpoint) return project;
+  const isClearing = !nextConn.internalEndpoint && !!previousConn.internalEndpoint;
+  const containerTag = endpoint.containerTag;
+  const target = isClearing
+    ? findDeviceById(project, endpoint.containerId) ??
+      findDeviceByTag(project, containerTag)
+    : findDeviceById(project, endpoint.deviceId) ??
+      findDeviceByTag(project, endpoint.deviceTag);
+  if (!target) return project;
   const pointIndex =
-    endpoint === "A" ? 0 : Math.max(0, Math.floor(cable.points.length / 2) - 1);
-  return cablePointBelongsToDevice(cable, pointIndex, device);
+    nextConn.fromTag === containerTag
+      ? 0
+      : nextConn.toTag === containerTag
+        ? -1
+        : null;
+  if (pointIndex === null) return project;
+  const allMarkups = project.sheets.flatMap((sheet) => sheet.markups);
+  const targetEndpoint = endpointFromMarkup(target, { markups: allMarkups });
+  const targetPoint = targetEndpoint ?? target;
+  return {
+    ...project,
+    sheets: project.sheets.map((sheet) => ({
+      ...sheet,
+      markups: sheet.markups.map((markup) => {
+        if (markup.kind !== "cable" || markup.id !== nextConn.cableMarkupId) return markup;
+        const index = pointIndex === -1 ? Math.floor(markup.points.length / 2) - 1 : pointIndex;
+        const points = [...markup.points];
+        points[index * 2] = targetPoint.x;
+        points[index * 2 + 1] = targetPoint.y;
+        const pointAttachments = [...(markup.pointAttachments ?? [])];
+        pointAttachments[index] = targetEndpoint
+          ? {
+              deviceMarkupId: targetEndpoint.deviceMarkupId,
+              deviceTag: targetEndpoint.deviceTag,
+              label: targetEndpoint.label,
+              deviceId: targetEndpoint.deviceId,
+              category: targetEndpoint.category,
+              routeWaypoint: targetEndpoint.routeWaypoint,
+            }
+          : null;
+        return { ...markup, points, pointAttachments };
+      }),
+    })),
+  };
 }
 
-function deviceHasLockedCableAnchor(markups: Markup[], device: DeviceMarkup) {
-  return markups.some((m) => {
-    if (m.kind !== "cable" || !m.locked) return false;
-    const pointCount = Math.floor(m.points.length / 2);
-    for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
-      if (cablePointBelongsToDevice(m, pointIndex, device)) return true;
-    }
-    return false;
+function syncRackSystems(project: Project): Project {
+  const now = Date.now();
+  const sourceSheets = new Map<string, string>();
+  const devices = project.sheets.flatMap((sheet) => {
+    const sheetDevices = sheet.markups.filter(
+      (markup): markup is DeviceMarkup => markup.kind === "device",
+    );
+    for (const device of sheetDevices) sourceSheets.set(device.id, sheet.id);
+    return sheetDevices;
   });
+  const rackMarkups = devices.filter(isRackDevice);
+  const existingAutoRacks = new Map(
+    (project.racks ?? [])
+      .filter((rack) => rack.sourceMarkupId)
+      .map((rack) => [rack.sourceMarkupId!, rack]),
+  );
+  const manualRacks = (project.racks ?? []).filter((rack) => !rack.sourceMarkupId);
+
+  const autoRacks = rackMarkups.map((rackMarkup) => {
+    const existing = existingAutoRacks.get(rackMarkup.id);
+    let nextSlot = 1;
+    const placements = devices
+      .filter((device) => device.parentId === rackMarkup.id)
+      .map((device) => {
+        const rackDeviceId = rackDeviceIdForNestedDevice(device);
+        if (!rackDeviceId) return null;
+        const previousPlacement = existing?.placements.find(
+          (placement) => placement.sourceMarkupId === device.id,
+        );
+        const catalog = rackCatalog.find((candidate) => candidate.id === rackDeviceId);
+        const placement: RackPlacement = {
+          id: previousPlacement?.id ?? uid(),
+          sourceMarkupId: device.id,
+          deviceId: rackDeviceId,
+          uSlot: previousPlacement?.uSlot ?? nextSlot,
+          label: deviceDisplayName(device),
+          costOverride: previousPlacement?.costOverride,
+          notes: previousPlacement?.notes,
+        };
+        nextSlot = Math.max(nextSlot, placement.uSlot + (catalog?.uHeight ?? 1));
+        return placement;
+      })
+      .filter((placement): placement is RackPlacement => placement !== null);
+
+    return {
+      id: existing?.id ?? uid(),
+      sourceMarkupId: rackMarkup.id,
+      name: existing?.name ?? deviceDisplayName(rackMarkup),
+      uHeight: existing?.uHeight ?? 42,
+      location: existing?.location ?? rackMarkup.labelOverride,
+      associatedSheetId: existing?.associatedSheetId ?? sourceSheets.get(rackMarkup.id),
+      placements,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    } satisfies Rack;
+  });
+
+  return { ...project, racks: [...manualRacks, ...autoRacks] };
 }
 
-function labelMatchesDeviceTag(label: string | undefined, tag: string) {
-  return label === tag || label?.startsWith(`${tag} ·`) === true;
+function autoAssignContainerProject(project: Project, containerId: string): Project {
+  let nextProject = project;
+  const container = findDeviceById(nextProject, containerId);
+  if (!container?.tag) return nextProject;
+  const children = nextProject.sheets
+    .flatMap((sheet) => sheet.markups)
+    .filter(
+      (markup): markup is DeviceMarkup =>
+        markup.kind === "device" && markup.parentId === container.id,
+    );
+  if (children.length === 0) return nextProject;
+
+  for (const conn of nextProject.connections ?? []) {
+    if (conn.internalEndpoint) continue;
+    if (conn.fromTag !== container.tag && conn.toTag !== container.tag) continue;
+    const child = children.find((candidate) =>
+      nextAvailableInternalPort(nextProject, conn, candidate),
+    );
+    if (!child) continue;
+    const port = nextAvailableInternalPort(nextProject, conn, child);
+    const nextConn = completeInternalEndpoint(nextProject, {
+      ...conn,
+      internalEndpoint: {
+        containerId: container.id,
+        containerTag: container.tag,
+        deviceId: child.id,
+        deviceTag: child.tag,
+        ...(port ? { portId: port.id, port: port.label } : {}),
+      },
+    });
+    const projectWithConnection = {
+      ...nextProject,
+      connections: (nextProject.connections ?? []).map((existing) =>
+        existing.id === conn.id ? nextConn : existing,
+      ),
+      updatedAt: Date.now(),
+    };
+    nextProject = reanchorConnectionCable(projectWithConnection, conn, nextConn);
+  }
+  return nextProject;
 }
 
-function deviceLabel(device: DeviceMarkup) {
-  const tag = device.tag?.trim();
-  if (!tag) return undefined;
-  return device.labelOverride?.trim()
-    ? `${tag} · ${device.labelOverride.trim()}`
-    : tag;
+function countInternalAssignments(nextProject: Project, previousProject: Project): number {
+  let count = 0;
+  for (const conn of nextProject.connections ?? []) {
+    const previous = previousProject.connections?.find((c) => c.id === conn.id);
+    if (!previous?.internalEndpoint && conn.internalEndpoint) count += 1;
+  }
+  return count;
 }
 
 function endpointPoint(cable: CableMarkup, endpoint: CableRunEndpointKey) {
@@ -3382,37 +3669,16 @@ function cableWithEndpoint(
   x: number,
   y: number,
   label: string | undefined,
-  device?: DeviceMarkup,
 ): CableMarkup {
   const points = [...cable.points];
-  const pointCount = Math.floor(points.length / 2);
-  const pointAttachments = normalizePointAttachments(cable, pointCount);
-  const currentAttachment =
-    endpoint === "A" ? pointAttachments[0] : pointAttachments[pointCount - 1];
-  const attachment = device
-    ? {
-        ...currentAttachment,
-        deviceMarkupId: device.id,
-        deviceTag: device.tag || currentAttachment?.deviceTag,
-        label: label ?? currentAttachment?.label,
-        deviceId: device.deviceId,
-        category: device.category,
-        routeWaypoint:
-          currentAttachment?.routeWaypoint ?? isRouteInfrastructureMarkup(device),
-      }
-    : label
-      ? { ...currentAttachment, label }
-      : currentAttachment;
   if (endpoint === "A") {
     points[0] = x;
     points[1] = y;
-    pointAttachments[0] = attachment;
-    return { ...cable, points, pointAttachments, endpointA: label ?? cable.endpointA };
+    return { ...cable, points, endpointA: label ?? cable.endpointA };
   }
   points[points.length - 2] = x;
   points[points.length - 1] = y;
-  pointAttachments[pointCount - 1] = attachment;
-  return { ...cable, points, pointAttachments, endpointB: label ?? cable.endpointB };
+  return { ...cable, points, endpointB: label ?? cable.endpointB };
 }
 
 // ───────── Selectors ─────────
@@ -3433,3 +3699,110 @@ export const selectActiveDiagram = (s: State): Diagram | null => {
     s.project.diagrams?.find((d) => d.id === s.activeDiagramId) ?? null
   );
 };
+
+type HotStateSnapshot = Pick<
+  State,
+  | "project"
+  | "history"
+  | "view"
+  | "activeSheetId"
+  | "activeRackId"
+  | "activeDiagramId"
+  | "activeTool"
+  | "activeDeviceId"
+  | "activeCableId"
+  | "activeConduitType"
+  | "activeConduitSize"
+  | "activeFiberStrandCount"
+  | "selectedMarkupIds"
+  | "selectedBrand"
+  | "layers"
+  | "cursor"
+  | "viewport"
+  | "sheetViewports"
+  | "snapEnabled"
+  | "orthoEnabled"
+  | "coverageVisible"
+  | "brandPreviewEnabled"
+  | "pagePreview"
+  | "freehandColor"
+  | "freehandThickness"
+  | "freehandErasing"
+  | "cableRunDraft"
+  | "cableRunBulkBranch"
+  | "runLabelsVisible"
+  | "qualityMode"
+  | "ingestProgress"
+  | "bidPanelOpen"
+  | "paletteOpen"
+  | "settingsOpen"
+  | "commandPaletteOpen"
+  | "toasts"
+>;
+
+function hotSnapshot(s: State): HotStateSnapshot {
+  return {
+    project: s.project,
+    history: s.history,
+    view: s.view,
+    activeSheetId: s.activeSheetId,
+    activeRackId: s.activeRackId,
+    activeDiagramId: s.activeDiagramId,
+    activeTool: s.activeTool,
+    activeDeviceId: s.activeDeviceId,
+    activeCableId: s.activeCableId,
+    activeConduitType: s.activeConduitType,
+    activeConduitSize: s.activeConduitSize,
+    activeFiberStrandCount: s.activeFiberStrandCount,
+    selectedMarkupIds: s.selectedMarkupIds,
+    selectedBrand: s.selectedBrand,
+    layers: s.layers,
+    cursor: s.cursor,
+    viewport: s.viewport,
+    sheetViewports: s.sheetViewports,
+    snapEnabled: s.snapEnabled,
+    orthoEnabled: s.orthoEnabled,
+    coverageVisible: s.coverageVisible,
+    brandPreviewEnabled: s.brandPreviewEnabled,
+    pagePreview: s.pagePreview,
+    freehandColor: s.freehandColor,
+    freehandThickness: s.freehandThickness,
+    freehandErasing: s.freehandErasing,
+    cableRunDraft: s.cableRunDraft,
+    cableRunBulkBranch: s.cableRunBulkBranch,
+    runLabelsVisible: s.runLabelsVisible,
+    qualityMode: s.qualityMode,
+    ingestProgress: s.ingestProgress,
+    bidPanelOpen: s.bidPanelOpen,
+    paletteOpen: s.paletteOpen,
+    settingsOpen: s.settingsOpen,
+    commandPaletteOpen: s.commandPaletteOpen,
+    toasts: s.toasts,
+  };
+}
+
+type ViteHotContext = {
+  data: { state?: HotStateSnapshot };
+  dispose: (callback: (data: { state?: HotStateSnapshot }) => void) => void;
+};
+
+const viteHot = (import.meta as ImportMeta & { hot?: ViteHotContext }).hot;
+
+if (viteHot) {
+  const hotData = viteHot.data;
+  if (hotData.state) {
+    useProjectStore.setState({
+      ...hotData.state,
+      project: hotData.state.project
+        ? normalizeProject(hotData.state.project)
+        : null,
+      history: hotData.state.history ?? emptyHistory(),
+      layers: normalizeLayers(hotData.state.layers),
+      runLabelsVisible: hotData.state.project?.runLabelsVisible === true,
+      cableRunBulkBranch: null,
+    });
+  }
+  viteHot.dispose((data) => {
+    data.state = hotSnapshot(useProjectStore.getState());
+  });
+}

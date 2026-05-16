@@ -10,6 +10,7 @@ import { ZoomCluster } from "./ZoomCluster";
 import { SelectionActionBar } from "./SelectionActionBar";
 import { MaskActionBar } from "./MaskActionBar";
 import { useToolGesture } from "../hooks/useToolGesture";
+import { saveCanvasViewport } from "../lib/canvasViewport";
 
 interface Props {
   sheet: Sheet;
@@ -22,6 +23,7 @@ export function Editor({ sheet, onCalibrateConfirm }: Props) {
   const [size, setSize] = useState({ w: 0, h: 0 });
   const setCursor = useProjectStore((s) => s.setCursor);
   const viewport = useProjectStore((s) => s.viewport);
+  const hasStoredViewport = useProjectStore((s) => Boolean(s.sheetViewports[sheet.id]));
   const setViewport = useProjectStore((s) => s.setViewport);
   const activeTool = useProjectStore((s) => s.activeTool);
   const project = useProjectStore((s) => s.project);
@@ -30,6 +32,7 @@ export function Editor({ sheet, onCalibrateConfirm }: Props) {
   const [panning, setPanning] = useState(false);
   const panStart = useRef<{ x: number; y: number; stageX: number; stageY: number } | null>(null);
   const [spaceHeld, setSpaceHeld] = useState(false);
+  const latestViewportRef = useRef(viewport);
   const { rectHandlers, preview } = useToolGesture(sheet, onCalibrateConfirm);
 
   // Track container size
@@ -43,12 +46,37 @@ export function Editor({ sheet, onCalibrateConfirm }: Props) {
     return () => ro.disconnect();
   }, []);
 
-  // Auto fit on sheet change or first load
+  // Auto fit only until a sheet has an in-memory or restored viewport.
   useEffect(() => {
     if (size.w === 0 || size.h === 0) return;
+    if (hasStoredViewport) return;
     fitToPage();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sheet.id, size.w, size.h]);
+  }, [sheet.id, size.w, size.h, hasStoredViewport]);
+
+  useEffect(() => {
+    if (!project?.id || !hasStoredViewport) return;
+    const t = window.setTimeout(() => {
+      saveCanvasViewport(project.id, sheet.id, viewport);
+    }, 250);
+    return () => window.clearTimeout(t);
+  }, [project?.id, sheet.id, viewport, hasStoredViewport]);
+
+  useEffect(() => {
+    latestViewportRef.current = viewport;
+  }, [viewport]);
+
+  useEffect(() => {
+    if (!project?.id || !hasStoredViewport) return;
+    const flush = () => {
+      saveCanvasViewport(project.id, sheet.id, latestViewportRef.current);
+    };
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
+  }, [project?.id, sheet.id, hasStoredViewport]);
 
   const fitToPage = useCallback(() => {
     if (size.w === 0 || size.h === 0) return;

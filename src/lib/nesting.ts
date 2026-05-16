@@ -4,6 +4,7 @@ import type { DeviceConnection, DeviceMarkup, Markup } from "../store/projectSto
 export const NESTING_SNAP_DISTANCE_PTS = 10;
 export const NESTED_BUBBLE_SCALE = 1 / 3;
 export const RACK_DEVICE_ID = "net-rack";
+export const NESTED_BUBBLE_HIT_RADIUS_PTS = 12;
 
 const CONTAINER_TERMS = [
   "rack",
@@ -165,6 +166,10 @@ export function nestedBubbleSize(child: DeviceMarkup): number {
   return Math.max(10, (child.size ?? 28) * NESTED_BUBBLE_SCALE);
 }
 
+export function nestedBubbleHitRadius(child: DeviceMarkup): number {
+  return Math.max(NESTED_BUBBLE_HIT_RADIUS_PTS, nestedBubbleSize(child) / 2 + 4);
+}
+
 export function nestedBubbleLabel(child: DeviceMarkup): string {
   const maxChars = 3;
   const catalog = devicesById[child.deviceId];
@@ -288,8 +293,18 @@ export function nestedConnectionSummary(
   const t = tag.trim();
   if (!t) return "";
   return (connections ?? [])
-    .filter((c) => c.fromTag === t || c.toTag === t)
+    .filter(
+      (c) =>
+        c.fromTag === t ||
+        c.toTag === t ||
+        c.internalEndpoint?.deviceTag === t,
+    )
     .map((c) => {
+      if (c.internalEndpoint?.deviceTag === t) {
+        const external = c.fromTag === c.internalEndpoint.containerTag ? c.toTag : c.fromTag;
+        const port = c.internalEndpoint.port || c.internalEndpoint.portId;
+        return port ? `${external} (${port})` : external;
+      }
       const outbound = c.fromTag === t;
       const other = outbound ? c.toTag : c.fromTag;
       const port = outbound

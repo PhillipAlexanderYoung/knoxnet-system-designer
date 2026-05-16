@@ -2,8 +2,10 @@ import type {
   Project,
   Sheet,
   Markup,
+  CableMarkup,
   Rack,
   CatalogOverrides,
+  BidLineLaborOverrides,
 } from "../store/projectStore";
 import { devicesById } from "../data/devices";
 import { cablesById } from "../data/cables";
@@ -22,6 +24,7 @@ import {
 } from "./pricing";
 
 export interface DeviceLine {
+  lineId: string;
   deviceId: string;
   label: string;
   shortCode: string;
@@ -30,11 +33,16 @@ export interface DeviceLine {
   unitCost: number;
   unitLabor: number;
   extCost: number;
+  calculatedLabor: number;
   extLabor: number;
+  laborOverridden: boolean;
+  laborOverrideHours?: number;
   perSheetCounts: { sheetName: string; qty: number }[];
 }
 
 export interface CableLine {
+  lineId: string;
+  lineKey: string;
   cableId: string;
   label: string;
   shortCode: string;
@@ -44,11 +52,15 @@ export interface CableLine {
   costPerFoot: number;
   laborPerFoot: number;
   extCost: number;
+  calculatedLabor: number;
   extLabor: number;
+  laborOverridden: boolean;
+  laborOverrideHours?: number;
   perSheetFeet: { sheetName: string; ft: number; rawFt: number }[];
 }
 
 export interface RackLine {
+  lineId: string;
   deviceId: string;
   label: string;
   manufacturer: string;
@@ -58,7 +70,10 @@ export interface RackLine {
   unitCost: number;
   unitLabor: number;
   extCost: number;
+  calculatedLabor: number;
   extLabor: number;
+  laborOverridden: boolean;
+  laborOverrideHours?: number;
   perRackCounts: { rackName: string; qty: number }[];
 }
 
@@ -76,6 +91,21 @@ export interface BidResult {
     grandTotal: number;
   };
   warnings: string[];
+}
+
+export const bidDeviceLineId = (deviceId: string) => `device:${deviceId}`;
+export const bidRackDeviceLineId = (deviceId: string) => `rackDevice:${deviceId}`;
+export const bidCableLineId = (lineKey: string) => `cable:${lineKey}`;
+
+export function bidCableLineKeyFromMarkup(
+  m: Pick<CableMarkup, "cableId" | "conduitType" | "conduitSize" | "fiberStrandCount">,
+) {
+  const strandCount = fiberStrandCountFor(m, m.cableId);
+  return m.cableId === "conduit"
+    ? `conduit:${conduitLabelFor(m)}`
+    : strandCount
+      ? `${m.cableId}:${strandCount}`
+      : m.cableId;
 }
 
 export function computeBid(project: Project): BidResult {
@@ -106,6 +136,10 @@ export function computeBid(project: Project): BidResult {
   const rackDevicesList = Array.from(rackMap.values()).sort((a, b) =>
     a.label.localeCompare(b.label),
   );
+
+  applyLineLaborOverrides(devices, project.bidLaborOverrides);
+  applyLineLaborOverrides(cables, project.bidLaborOverrides);
+  applyLineLaborOverrides(rackDevicesList, project.bidLaborOverrides);
 
   const materialCost =
     devices.reduce((s, l) => s + l.extCost, 0) +
@@ -151,6 +185,7 @@ function tallyRack(
     const unitCost = resolveRackCost(dev, overrides);
     const unitLabor = resolveRackLabor(dev, overrides);
     const existing = map.get(dev.id) ?? {
+      lineId: bidRackDeviceLineId(dev.id),
       deviceId: dev.id,
       label: dev.label,
       manufacturer: dev.manufacturer,
@@ -160,12 +195,15 @@ function tallyRack(
       unitCost,
       unitLabor,
       extCost: 0,
+      calculatedLabor: 0,
       extLabor: 0,
+      laborOverridden: false,
       perRackCounts: [],
     };
     const cost = p.costOverride ?? unitCost;
     existing.qty += 1;
     existing.extCost += cost;
+    existing.calculatedLabor += unitLabor;
     existing.extLabor += unitLabor;
     const re = existing.perRackCounts.find((r) => r.rackName === rack.name);
     if (re) re.qty += 1;
@@ -189,6 +227,7 @@ function tally(
     const unitCost = resolveDeviceCost(dev, overrides);
     const unitLabor = resolveDeviceLabor(dev, overrides);
     const existing = deviceMap.get(m.deviceId) ?? {
+      lineId: bidDeviceLineId(m.deviceId),
       deviceId: m.deviceId,
       label: dev.label,
       shortCode: dev.shortCode,
@@ -197,12 +236,15 @@ function tally(
       unitCost,
       unitLabor,
       extCost: 0,
+      calculatedLabor: 0,
       extLabor: 0,
+      laborOverridden: false,
       perSheetCounts: [],
     };
     const cost = m.costOverride ?? unitCost;
     existing.qty += 1;
     existing.extCost += cost;
+    existing.calculatedLabor += unitLabor;
     existing.extLabor += unitLabor;
     const sheetEntry = existing.perSheetCounts.find((p) => p.sheetName === sheetLabel(sheet));
     if (sheetEntry) sheetEntry.qty += 1;
@@ -229,14 +271,11 @@ function tally(
     const cpf = resolveCableCost(cab, overrides);
     const lpf = resolveCableLabor(cab, overrides);
     const strandCount = fiberStrandCountFor(m, m.cableId);
-    const cableKey =
-      m.cableId === "conduit"
-        ? `conduit:${conduitLabelFor(m)}`
-        : strandCount
-          ? `${m.cableId}:${strandCount}`
-          : m.cableId;
+    const cableKey = bidCableLineKeyFromMarkup(m);
     const label = cableDisplayLabel(m.cableId, cab.label, m);
     const existing = cableMap.get(cableKey) ?? {
+      lineId: bidCableLineId(cableKey),
+      lineKey: cableKey,
       cableId: m.cableId,
       label,
       shortCode: m.cableId === "conduit" ? label : fiberCompactLabel(m.cableId, cab.shortCode, m),
@@ -246,12 +285,15 @@ function tally(
       costPerFoot: cpf,
       laborPerFoot: lpf,
       extCost: 0,
+      calculatedLabor: 0,
       extLabor: 0,
+      laborOverridden: false,
       perSheetFeet: [],
     };
     existing.totalFeet += adjusted;
     existing.rawFeet += rawFt;
     existing.extCost += adjusted * cpf;
+    existing.calculatedLabor += adjusted * lpf;
     existing.extLabor += adjusted * lpf;
     const sheetEntry = existing.perSheetFeet.find((p) => p.sheetName === sheetLabel(sheet));
     if (sheetEntry) {
@@ -261,6 +303,25 @@ function tally(
       existing.perSheetFeet.push({ sheetName: sheetLabel(sheet), ft: adjusted, rawFt });
     }
     cableMap.set(cableKey, existing);
+  }
+}
+
+function applyLineLaborOverrides<
+  T extends {
+    lineId: string;
+    extLabor: number;
+    calculatedLabor: number;
+    laborOverridden: boolean;
+    laborOverrideHours?: number;
+  },
+>(lines: T[], overrides?: BidLineLaborOverrides) {
+  if (!overrides) return;
+  for (const line of lines) {
+    const override = overrides[line.lineId]?.laborHours;
+    if (!Number.isFinite(override) || override < 0) continue;
+    line.extLabor = override;
+    line.laborOverrideHours = override;
+    line.laborOverridden = true;
   }
 }
 

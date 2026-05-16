@@ -1,6 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { sortMarkupsForRender } from "../src/lib/markupOrdering";
+import {
+  sortDeviceTagsForRender,
+  sortMarkupsForRender,
+} from "../src/lib/markupOrdering";
 import {
   DEFAULT_LAYERS,
   normalizeLayers,
@@ -65,6 +68,31 @@ describe("markup render ordering", () => {
     expect(ordered.map((m) => m.id)).toEqual(["run", "pull-box"]);
   });
 
+  it("exposes device tags as a final overlay in render order", () => {
+    const ordered = sortDeviceTagsForRender([
+      cable({ id: "run" }),
+      device({ id: "switch", layer: "network" }),
+      device({ id: "camera", layer: "cameras" }),
+    ]);
+
+    expect(ordered.map((m) => m.id)).toEqual(["switch", "camera"]);
+  });
+
+  it("keeps tag overlay order aligned with explicit layer reordering", () => {
+    const layers: Layer[] = normalizeLayers(DEFAULT_LAYERS);
+    const cameraIndex = layers.findIndex((l) => l.id === "cameras");
+    const [cameraLayer] = layers.splice(cameraIndex, 1);
+    layers.push(cameraLayer);
+
+    const ordered = sortDeviceTagsForRender([
+      device({ id: "camera", layer: "cameras" }),
+      device({ id: "switch", layer: "network" }),
+      cable({ id: "run" }),
+    ], layers);
+
+    expect(ordered.map((m) => m.id)).toEqual(["camera", "switch"]);
+  });
+
   it("persists layer reordering onto the active project", () => {
     useProjectStore.getState().newProject({ projectName: "Layer Order Test" });
     useProjectStore.getState().moveLayer("cable", "up");
@@ -79,7 +107,7 @@ describe("markup render ordering", () => {
     useProjectStore.getState().newProject({ projectName: "Run Label Test" });
 
     expect(useProjectStore.getState().runLabelsVisible).toBe(false);
-    expect(useProjectStore.getState().project?.runLabelsVisible).toBeUndefined();
+    expect(useProjectStore.getState().project?.runLabelsVisible).toBe(false);
 
     useProjectStore.getState().toggleRunLabelsVisible();
 

@@ -28,6 +28,19 @@ export function findDeviceByTag(
   return undefined;
 }
 
+export function findDeviceById(
+  project: Project,
+  id: string | undefined,
+): DeviceMarkup | undefined {
+  if (!id) return undefined;
+  for (const sh of project.sheets) {
+    for (const m of sh.markups) {
+      if (m.kind === "device" && m.id === id) return m;
+    }
+  }
+  return undefined;
+}
+
 /** Resolve the effective port list for any device tag in the project.
  *  Returns undefined when the device has no `ports` spec — callers
  *  fall back to free-text labels in that case. */
@@ -47,6 +60,53 @@ export function findPort(
 ): PortSpec | undefined {
   if (!ports || !id) return undefined;
   return ports.find((p) => p.id === id);
+}
+
+function compatiblePortKindForMedium(medium: string | undefined): PortSpec["kind"] | null {
+  const normalized = medium?.trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized.includes("fiber")) return "fiber";
+  if (normalized.includes("coax")) return "coax";
+  if (normalized.includes("rs485") || normalized.includes("rs-485")) return "serial";
+  if (normalized.includes("rs232") || normalized.includes("rs-232")) return "serial";
+  if (normalized.includes("cat") || normalized.includes("ethernet")) return "ethernet";
+  return null;
+}
+
+export function isPortCompatibleWithConnection(
+  port: PortSpec,
+  conn: DeviceConnection,
+): boolean {
+  const kind = compatiblePortKindForMedium(conn.medium);
+  return !kind || port.kind === kind;
+}
+
+export function isInternalPortInUse(
+  project: Project,
+  device: DeviceMarkup,
+  portId: string,
+  excludeConnectionId?: string,
+): boolean {
+  return (project.connections ?? []).some(
+    (conn) =>
+      conn.id !== excludeConnectionId &&
+      conn.internalEndpoint?.deviceId === device.id &&
+      conn.internalEndpoint?.portId === portId,
+  );
+}
+
+export function nextAvailableInternalPort(
+  project: Project,
+  conn: DeviceConnection,
+  device: DeviceMarkup,
+): PortSpec | undefined {
+  const ports = effectiveDevicePorts(device.deviceId, device.instancePorts);
+  if (!ports || ports.length === 0) return undefined;
+  return ports.find(
+    (port) =>
+      isPortCompatibleWithConnection(port, conn) &&
+      !isInternalPortInUse(project, device, port.id, conn.id),
+  );
 }
 
 /** Human label for the source endpoint of a connection — prefers the
@@ -74,4 +134,28 @@ export function connectionToLabel(
     if (p) return p.label;
   }
   return conn.toPort ?? "";
+}
+
+export function internalEndpointPortLabel(
+  conn: DeviceConnection,
+  project: Project,
+): string {
+  const endpoint = conn.internalEndpoint;
+  if (!endpoint) return "";
+  const dev = findDeviceById(project, endpoint.deviceId);
+  const ports = dev
+    ? effectiveDevicePorts(dev.deviceId, dev.instancePorts)
+    : effectivePortsForTag(project, endpoint.deviceTag);
+  return findPort(ports, endpoint.portId)?.label ?? endpoint.port ?? "";
+}
+
+export function connectionDiagramTags(
+  conn: DeviceConnection,
+): { fromTag: string; toTag: string } {
+  const endpoint = conn.internalEndpoint;
+  if (!endpoint) return { fromTag: conn.fromTag, toTag: conn.toTag };
+  if (conn.fromTag === endpoint.containerTag) {
+    return { fromTag: endpoint.deviceTag, toTag: conn.toTag };
+  }
+  return { fromTag: conn.fromTag, toTag: endpoint.deviceTag };
 }
