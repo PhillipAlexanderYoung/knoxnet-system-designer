@@ -177,9 +177,9 @@ export function LeftRail() {
         <div className="flex-1 overflow-y-auto p-3 space-y-1">
           <div className="px-2 pb-1 label">Editor Layers</div>
           <p className="px-2 pb-1.5 text-[10px] text-ink-400 leading-relaxed">
-            Top layers draw over lower layers. Move Cable Runs below device
-            layers to keep equipment visible, or hide a layer to declutter
-            the canvas.
+            Top layers draw over lower layers. Cable Runs and Conduit Runs
+            are separate; showing either run layer also restores hidden runs
+            in that category.
           </p>
           {layers.map((l, index) => (
             <div
@@ -216,7 +216,13 @@ export function LeftRail() {
               <button
                 onClick={() => toggleLayer(l.id)}
                 className="text-ink-400 hover:text-ink-100"
-                title={l.visible ? "Hide" : "Show"}
+                title={
+                  l.visible
+                    ? "Hide"
+                    : l.id === "cable" || l.id === "conduit"
+                      ? "Show and restore hidden runs"
+                      : "Show"
+                }
               >
                 {l.visible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
               </button>

@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Circle, Group, Line, Text, Rect, Arrow, Path, Label, Tag } from "react-konva";
 import {
   useProjectStore,
+  effectiveMarkupLayerId,
   type Calibration,
   type Sheet,
   type Markup,
@@ -42,6 +43,7 @@ import {
 import { compactConduitLabel } from "../lib/conduit";
 import { fiberCompactLabel } from "../lib/fiber";
 import {
+  partitionValidationHighlightOverlay,
   sortDeviceTagsForRender,
   sortMarkupsForRender,
 } from "../lib/markupOrdering";
@@ -60,6 +62,7 @@ import {
   scheduleBlockSize,
   scheduleRowsForDisplay,
 } from "../lib/scheduleBlocks";
+import { validateProject, validationMarkupIdsForIssues } from "../lib/validation";
 
 type TagSettings = Pick<Project, "tagDefaults" | "branding"> | null;
 type HoverHint = { text: string; x: number; y: number; targetKey: string; fading?: boolean };
@@ -73,6 +76,7 @@ const HOVER_SHADOW_OPACITY = 0.32;
 const HOVER_HINT_DELAY_MS = 120;
 const HOVER_HINT_VISIBLE_MS = 3000;
 const HOVER_HINT_FADE_MS = 350;
+const VALIDATION_RED = "#EF4444";
 
 export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }) {
   const project = useProjectStore((s) => s.project);
@@ -81,10 +85,12 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
   const selected = useProjectStore((s) => s.selectedMarkupIds);
   const hintedMarkupId = useProjectStore((s) => s.hintedMarkupId);
   const hintedMarkupIds = useProjectStore((s) => s.hintedMarkupIds);
+  const validationHighlightMarkupIds = useProjectStore((s) => s.validationHighlightMarkupIds);
+  const validationIssueMode = useProjectStore((s) => s.validationIssueMode);
   const setSelected = useProjectStore((s) => s.setSelected);
   const updateMarkup = useProjectStore((s) => s.updateMarkup);
   const moveDeviceMarkup = useProjectStore((s) => s.moveDeviceMarkup);
-  const notifyLockedDeviceMoveAttempt = useProjectStore((s) => s.notifyLockedDeviceMoveAttempt);
+  const notifyLockedMoveAttempt = useProjectStore((s) => s.notifyLockedMoveAttempt);
   const deleteMarkup = useProjectStore((s) => s.deleteMarkup);
   const activeTool = useProjectStore((s) => s.activeTool);
   const setActiveTool = useProjectStore((s) => s.setActiveTool);
@@ -183,6 +189,13 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
     () => new Set([hintedMarkupId, ...hintedMarkupIds].filter(Boolean) as string[]),
     [hintedMarkupId, hintedMarkupIds],
   );
+  const validationHighlightedSet = useMemo(() => {
+    const ids =
+      validationIssueMode && project
+        ? validationMarkupIdsForIssues(validateProject(project))
+        : validationHighlightMarkupIds;
+    return new Set(ids);
+  }, [project, validationHighlightMarkupIds, validationIssueMode]);
   const runLabelLayouts = useMemo(
     () =>
       runLabelLayoutsFor(sheet.markups, {
@@ -205,16 +218,23 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
     if (!hovered) return orderedMarkups;
     return orderedMarkups.filter((m) => m.id !== hoveredMarkupId).concat(hovered);
   }, [hoveredMarkupId, orderedMarkups]);
-  const orderedDeviceTags = useMemo(
-    () => sortDeviceTagsForRender(raisedMarkups, layers),
-    [layers, raisedMarkups],
+  const validationOverlay = useMemo(
+    () => partitionValidationHighlightOverlay(raisedMarkups, validationHighlightedSet),
+    [raisedMarkups, validationHighlightedSet],
   );
-  const isLayerOff = useCallback(
-    (id: string) => layerById[id] && !layerById[id].visible,
+  const orderedDeviceTags = useMemo(
+    () => sortDeviceTagsForRender(validationOverlay.baseMarkups, layers),
+    [layers, validationOverlay.baseMarkups],
+  );
+  const isMarkupLayerOff = useCallback(
+    (markup: Markup) => {
+      const id = effectiveMarkupLayerId(markup);
+      return layerById[id] && !layerById[id].visible;
+    },
     [layerById],
   );
-  const isLayerLocked = useCallback(
-    (id: string) => layerById[id]?.locked === true,
+  const isMarkupLayerLocked = useCallback(
+    (markup: Markup) => layerById[effectiveMarkupLayerId(markup)]?.locked === true,
     [layerById],
   );
   const eventSheetPoint = useCallback(
@@ -316,7 +336,7 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
         <Group listening={false}>
           {sheet.markups.map((m) => {
             if (m.hidden || m.kind !== "device") return null;
-            if (isLayerOff(m.layer)) return null;
+            if (isMarkupLayerOff(m)) return null;
             if (m.parentId) return null;
             return (
               <CoverageOverlay
@@ -330,12 +350,13 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
         </Group>
       )}
 
-      {raisedMarkups.map((m) => {
+      {validationOverlay.baseMarkups.map((m) => {
         if (m.hidden) return null;
         if (m.kind === "schedule") return null;
-        if (isLayerOff(m.layer)) return null;
+        if (isMarkupLayerOff(m)) return null;
         const isSel = selectedSet.has(m.id);
         const isHinted = hintedSet.has(m.id);
+        const isValidationHighlighted = validationHighlightedSet.has(m.id);
         const parent =
           m.kind === "device" && m.parentId
             ? sheet.markups.find(
@@ -346,9 +367,16 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
         const draggable =
           activeTool === "select" &&
           !m.locked &&
-          !isLayerLocked(m.layer) &&
+          !isMarkupLayerLocked(m) &&
           !parent?.locked &&
-          !(parent && isLayerLocked(parent.layer));
+          !(parent && isMarkupLayerLocked(parent));
+        const lockedMoveHintMessage =
+          activeTool === "select" &&
+          !draggable &&
+          isLockHintMovableMarkup(m) &&
+          (m.locked || isMarkupLayerLocked(m) || !!parent?.locked || !!(parent && isMarkupLayerLocked(parent)))
+            ? "Locked. Unlock to move."
+            : undefined;
         return (
           <MarkupNode
             key={m.id}
@@ -359,11 +387,13 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
             sheetMarkups={sheet.markups}
             selected={isSel}
             hinted={isHinted}
+            validationHighlighted={isValidationHighlighted}
             draggable={draggable}
             onMarkupClick={handleMarkupClick}
             updateMarkup={updateMarkup}
             moveDeviceMarkup={moveDeviceMarkup}
-            notifyLockedDeviceMoveAttempt={notifyLockedDeviceMoveAttempt}
+            notifyLockedMoveAttempt={notifyLockedMoveAttempt}
+            lockedMoveHintMessage={lockedMoveHintMessage}
             tagSettings={tagSettings}
             runLabelLayout={m.kind === "cable" ? runLabelLayouts.get(m.id) : undefined}
             renderPart="body"
@@ -376,9 +406,10 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
       <Group>
         {orderedDeviceTags.map((m) => {
           if (m.hidden) return null;
-          if (isLayerOff(m.layer)) return null;
+          if (isMarkupLayerOff(m)) return null;
           const isSel = selectedSet.has(m.id);
           const isHinted = hintedSet.has(m.id);
+          const isValidationHighlighted = validationHighlightedSet.has(m.id);
           const parent =
             m.kind === "device" && m.parentId
               ? sheet.markups.find(
@@ -389,9 +420,15 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
           const draggable =
             activeTool === "select" &&
             !m.locked &&
-            !isLayerLocked(m.layer) &&
+            !isMarkupLayerLocked(m) &&
             !parent?.locked &&
-            !(parent && isLayerLocked(parent.layer));
+            !(parent && isMarkupLayerLocked(parent));
+          const lockedMoveHintMessage =
+            activeTool === "select" &&
+            !draggable &&
+            (m.locked || isMarkupLayerLocked(m) || !!parent?.locked || !!(parent && isMarkupLayerLocked(parent)))
+              ? "Locked. Unlock to move."
+              : undefined;
           return (
             <MarkupNode
               key={`${m.id}-tag`}
@@ -402,11 +439,13 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
               sheetMarkups={sheet.markups}
               selected={isSel}
               hinted={isHinted}
+              validationHighlighted={isValidationHighlighted}
               draggable={draggable}
               onMarkupClick={handleMarkupClick}
               updateMarkup={updateMarkup}
               moveDeviceMarkup={moveDeviceMarkup}
-              notifyLockedDeviceMoveAttempt={notifyLockedDeviceMoveAttempt}
+              notifyLockedMoveAttempt={notifyLockedMoveAttempt}
+              lockedMoveHintMessage={lockedMoveHintMessage}
               tagSettings={tagSettings}
               renderPart="tag"
               onHoverChange={setHoveredMarkupId}
@@ -417,15 +456,22 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
         })}
       </Group>
       <Group>
-        {raisedMarkups.map((m) => {
+        {validationOverlay.baseMarkups.map((m) => {
           if (m.hidden) return null;
           if (m.kind !== "schedule") return null;
           if (m.visible === false) return null;
-          if (isLayerOff(m.layer)) return null;
+          if (isMarkupLayerOff(m)) return null;
           const isSel = selectedSet.has(m.id);
           const isHinted = hintedSet.has(m.id);
+          const isValidationHighlighted = validationHighlightedSet.has(m.id);
           const draggable =
-            activeTool === "select" && !m.locked && !isLayerLocked(m.layer);
+            activeTool === "select" && !m.locked && !isMarkupLayerLocked(m);
+          const lockedMoveHintMessage =
+            activeTool === "select" &&
+            !draggable &&
+            (m.locked || isMarkupLayerLocked(m))
+              ? "Locked. Unlock to move."
+              : undefined;
           return (
             <MarkupNode
               key={`${m.id}-schedule`}
@@ -436,12 +482,55 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
               sheetMarkups={sheet.markups}
               selected={isSel}
               hinted={isHinted}
+              validationHighlighted={isValidationHighlighted}
               draggable={draggable}
               onMarkupClick={handleMarkupClick}
               updateMarkup={updateMarkup}
               moveDeviceMarkup={moveDeviceMarkup}
-              notifyLockedDeviceMoveAttempt={notifyLockedDeviceMoveAttempt}
+              notifyLockedMoveAttempt={notifyLockedMoveAttempt}
+              lockedMoveHintMessage={lockedMoveHintMessage}
               tagSettings={tagSettings}
+              renderPart="body"
+              onHoverChange={setHoveredMarkupId}
+              showHoverHint={showHoverHint}
+              hideHoverHint={hideHoverHint}
+            />
+          );
+        })}
+      </Group>
+      <Group>
+        {validationOverlay.overlayMarkups.map((m) => {
+          if (m.hidden) return null;
+          if (isMarkupLayerOff(m)) return null;
+          const isSel = selectedSet.has(m.id);
+          const isHinted = hintedSet.has(m.id);
+          const draggable =
+            activeTool === "select" && !m.locked && !isMarkupLayerLocked(m);
+          const lockedMoveHintMessage =
+            activeTool === "select" &&
+            !draggable &&
+            (m.locked || isMarkupLayerLocked(m))
+              ? "Locked. Unlock to move."
+              : undefined;
+          return (
+            <MarkupNode
+              key={`${m.id}-validation-overlay`}
+              markup={m}
+              project={project}
+              sheet={sheet}
+              calibration={sheet.calibration}
+              sheetMarkups={sheet.markups}
+              selected={isSel}
+              hinted={isHinted}
+              validationHighlighted={true}
+              draggable={draggable}
+              onMarkupClick={handleMarkupClick}
+              updateMarkup={updateMarkup}
+              moveDeviceMarkup={moveDeviceMarkup}
+              notifyLockedMoveAttempt={notifyLockedMoveAttempt}
+              lockedMoveHintMessage={lockedMoveHintMessage}
+              tagSettings={tagSettings}
+              runLabelLayout={runLabelLayouts.get(m.id)}
               renderPart="body"
               onHoverChange={setHoveredMarkupId}
               showHoverHint={showHoverHint}
@@ -494,11 +583,13 @@ const MarkupNode = memo(function MarkupNode({
   sheetMarkups,
   selected,
   hinted,
+  validationHighlighted,
   draggable,
   onMarkupClick,
   updateMarkup,
   moveDeviceMarkup,
-  notifyLockedDeviceMoveAttempt,
+  notifyLockedMoveAttempt,
+  lockedMoveHintMessage,
   tagSettings,
   runLabelLayout,
   renderPart,
@@ -513,11 +604,13 @@ const MarkupNode = memo(function MarkupNode({
   sheetMarkups?: Markup[];
   selected: boolean;
   hinted: boolean;
+  validationHighlighted: boolean;
   draggable: boolean;
   onMarkupClick: (m: Markup, e: any) => void;
   updateMarkup: ReturnType<typeof useProjectStore.getState>["updateMarkup"];
   moveDeviceMarkup: ReturnType<typeof useProjectStore.getState>["moveDeviceMarkup"];
-  notifyLockedDeviceMoveAttempt: ReturnType<typeof useProjectStore.getState>["notifyLockedDeviceMoveAttempt"];
+  notifyLockedMoveAttempt: ReturnType<typeof useProjectStore.getState>["notifyLockedMoveAttempt"];
+  lockedMoveHintMessage?: string;
   tagSettings: TagSettings;
   runLabelLayout?: RunLabelLayout;
   renderPart: MarkupRenderPart;
@@ -577,6 +670,7 @@ const MarkupNode = memo(function MarkupNode({
         selected,
         draggable,
         (hovered && !dragging) || hinted,
+        validationHighlighted,
         handleClick,
         clearHoverForDrag,
         finishHoverDrag,
@@ -584,8 +678,9 @@ const MarkupNode = memo(function MarkupNode({
         hideHoverHint,
         updateMarkup,
         moveDeviceMarkup,
-        notifyLockedDeviceMoveAttempt,
         tagSettings,
+        notifyLockedMoveAttempt,
+        lockedMoveHintMessage,
         runLabelLayout,
         renderPart,
       )}
@@ -602,6 +697,7 @@ function renderMarkup(
   selected: boolean,
   draggable: boolean,
   hovered: boolean,
+  validationHighlighted: boolean,
   onClick: (e: any) => void,
   clearHoverForDrag: (e: any) => void,
   finishHoverDrag: (e: any) => void,
@@ -609,11 +705,25 @@ function renderMarkup(
   hideHoverHint: () => void,
   updateMarkup: ReturnType<typeof useProjectStore.getState>["updateMarkup"],
   moveDeviceMarkup: ReturnType<typeof useProjectStore.getState>["moveDeviceMarkup"],
-  notifyLockedDeviceMoveAttempt: ReturnType<typeof useProjectStore.getState>["notifyLockedDeviceMoveAttempt"],
   tagSettings: TagSettings,
+  notifyLockedMoveAttempt: ReturnType<typeof useProjectStore.getState>["notifyLockedMoveAttempt"],
+  lockedMoveHintMessage?: string,
   runLabelLayout?: RunLabelLayout,
   renderPart: MarkupRenderPart = "body",
 ) {
+  const notifyLockedAttempt = (message = lockedMoveHintMessage) => {
+    if (!message) return;
+    notifyLockedMoveAttempt({
+      message,
+      scope: m.kind === "device" ? "global" : "selection",
+      targetIds: [m.id],
+    });
+  };
+  const handlePointerDown = (e: any) => {
+    onClick(e);
+    notifyLockedAttempt();
+  };
+
   switch (m.kind) {
     case "schedule": {
       if (renderPart === "tag" || !project || m.visible === false) return null;
@@ -630,6 +740,7 @@ function renderMarkup(
           : target?.kind === "cable"
             ? cablesById[target.cableId]?.color ?? "#F4B740"
             : "#F4B740";
+      const issueAccent = validationHighlighted ? VALIDATION_RED : accent;
       return (
         <Group
           x={m.x}
@@ -638,7 +749,7 @@ function renderMarkup(
           dragDistance={2}
           onClick={onClick}
           onTap={onClick}
-          onMouseDown={onClick}
+          onMouseDown={handlePointerDown}
           onMouseEnter={(e) => {
             showHoverHint({
               text: draggable ? "move schedule" : "select schedule",
@@ -662,19 +773,19 @@ function renderMarkup(
             width={size.width}
             height={size.height}
             fill={tagStyle.fillColor}
-            stroke={selected ? "#F4B740" : accent}
-            strokeWidth={selected ? 1.2 : hovered ? 0.95 : 0.65}
+            stroke={selected ? "#F4B740" : issueAccent}
+            strokeWidth={validationHighlighted ? 1.4 : selected ? 1.2 : hovered ? 0.95 : 0.65}
             cornerRadius={4}
             opacity={0.94}
-            shadowColor={hovered || selected ? accent : "rgba(0,0,0,0.55)"}
-            shadowBlur={hovered || selected ? 8 : 4}
-            shadowOpacity={hovered || selected ? HOVER_SHADOW_OPACITY : 0.48}
+            shadowColor={validationHighlighted || hovered || selected ? issueAccent : "rgba(0,0,0,0.55)"}
+            shadowBlur={validationHighlighted ? 11 : hovered || selected ? 8 : 4}
+            shadowOpacity={validationHighlighted ? 0.72 : hovered || selected ? HOVER_SHADOW_OPACITY : 0.48}
             perfectDrawEnabled={false}
           />
           <Rect
             width={size.width}
             height={15}
-            fill={accent}
+            fill={issueAccent}
             cornerRadius={[4, 4, 0, 0]}
             opacity={0.96}
             perfectDrawEnabled={false}
@@ -718,8 +829,10 @@ function renderMarkup(
       const dev = devicesById[m.deviceId];
       if (!dev) return null;
       const size = m.size ?? 28;
-      const color = m.colorOverride ?? categoryColor[dev.category] ?? "#94A0B8";
-      const hoverActive = hovered && !selected;
+      const color = validationHighlighted
+        ? VALIDATION_RED
+        : m.colorOverride ?? categoryColor[dev.category] ?? "#94A0B8";
+      const hoverActive = (hovered || validationHighlighted) && !selected;
       const nestedParent = m.parentId
         ? sheetMarkups.find(
             (candidate): candidate is DeviceMarkup =>
@@ -811,7 +924,7 @@ function renderMarkup(
             onTap={onClick}
             onMouseDown={(e) => {
               onClick(e);
-              if (nestedDragLocked) notifyLockedDeviceMoveAttempt();
+              if (lockedMoveHintMessage || nestedDragLocked) notifyLockedAttempt();
             }}
             onMouseEnter={(e) => {
               showHoverHint({
@@ -872,9 +985,9 @@ function renderMarkup(
                 color={color}
                 rotation={m.rotation ?? 0}
                 selected={selected}
-                hovered={hovered}
+                hovered={hovered || validationHighlighted}
                 onClick={onClick}
-                onMouseDown={onClick}
+                onMouseDown={handlePointerDown}
                 onMouseEnter={(e) => {
                   showHoverHint({
                     text: draggable ? deviceMoveHint : "select device",
@@ -1046,7 +1159,7 @@ function renderMarkup(
                 dragDistance={8}
                 onClick={onClick}
                 onTap={onClick}
-                onMouseDown={onClick}
+                onMouseDown={handlePointerDown}
                 onMouseEnter={(e) => {
                   showHoverHint({
                     text: draggable ? "move tag" : "select tag",
@@ -1123,7 +1236,8 @@ function renderMarkup(
     case "cable": {
       const cab = cablesById[m.cableId];
       if (!cab) return null;
-      const hoverActive = hovered && !selected;
+      const cableColor = validationHighlighted ? VALIDATION_RED : cab.color;
+      const hoverActive = (hovered || validationHighlighted) && !selected;
       const lenPts = polylineLengthPts(m.points);
       const ftRaw = ptsToFeet(lenPts, calibration);
       const mid = midpointOfPolyline(m.points);
@@ -1160,65 +1274,93 @@ function renderMarkup(
       return (
         <Group>
           {arched ? (
-            <Path
-              data={archedCablePath(m.points)}
-              stroke={cab.color}
-              strokeWidth={(cab.thickness ?? 2) + (selected ? 1 : hoverActive ? 0.6 : 0)}
-              dash={cab.dash}
-              lineCap="round"
-              lineJoin="round"
-              shadowColor={selected || hoverActive ? cab.color : undefined}
-              shadowBlur={selected ? 8 : hoverActive ? 6 : 0}
-              shadowOpacity={selected ? 0.55 : hoverActive ? HOVER_SHADOW_OPACITY : 0}
-              onClick={onClick}
-              onMouseDown={onClick}
-              onMouseEnter={(e) => {
-                if (mid) {
-                  showHoverHint({
-                    text: selected && draggable ? "move run label or joints" : "select cable run",
-                    x: mid.x + 7,
-                    y: mid.y - 16,
-                    targetKey: `${m.id}:cable`,
-                  });
-                }
-                setStageCursor(e, "pointer");
-              }}
-              onMouseLeave={(e) => {
-                hideHoverHint();
-                setStageCursor(e, "");
-              }}
-              hitStrokeWidth={Math.max(10, (cab.thickness ?? 2) + 6)}
-            />
+            <>
+              {validationHighlighted && (
+                <Path
+                  data={archedCablePath(m.points)}
+                  stroke={VALIDATION_RED}
+                  strokeWidth={(cab.thickness ?? 2) + 8}
+                  lineCap="round"
+                  lineJoin="round"
+                  opacity={0.22}
+                  listening={false}
+                  perfectDrawEnabled={false}
+                />
+              )}
+              <Path
+                data={archedCablePath(m.points)}
+                stroke={cableColor}
+                strokeWidth={(cab.thickness ?? 2) + (validationHighlighted ? 2.6 : selected ? 1 : hoverActive ? 0.6 : 0)}
+                dash={cab.dash}
+                lineCap="round"
+                lineJoin="round"
+                shadowColor={validationHighlighted || selected || hoverActive ? cableColor : undefined}
+                shadowBlur={validationHighlighted ? 16 : selected ? 8 : hoverActive ? 6 : 0}
+                shadowOpacity={validationHighlighted ? 0.9 : selected ? 0.55 : hoverActive ? HOVER_SHADOW_OPACITY : 0}
+                onClick={onClick}
+                onMouseDown={handlePointerDown}
+                onMouseEnter={(e) => {
+                  if (mid) {
+                    showHoverHint({
+                      text: selected && draggable ? "move run label or joints" : "select cable run",
+                      x: mid.x + 7,
+                      y: mid.y - 16,
+                      targetKey: `${m.id}:cable`,
+                    });
+                  }
+                  setStageCursor(e, "pointer");
+                }}
+                onMouseLeave={(e) => {
+                  hideHoverHint();
+                  setStageCursor(e, "");
+                }}
+                hitStrokeWidth={Math.max(10, (cab.thickness ?? 2) + 6)}
+              />
+            </>
           ) : (
-            <Line
-              points={m.points}
-              stroke={cab.color}
-              strokeWidth={(cab.thickness ?? 2) + (selected ? 1 : hoverActive ? 0.6 : 0)}
-              dash={cab.dash}
-              lineCap="round"
-              lineJoin="round"
-              shadowColor={selected || hoverActive ? cab.color : undefined}
-              shadowBlur={selected ? 8 : hoverActive ? 6 : 0}
-              shadowOpacity={selected ? 0.55 : hoverActive ? HOVER_SHADOW_OPACITY : 0}
-              onClick={onClick}
-              onMouseDown={onClick}
-              onMouseEnter={(e) => {
-                if (mid) {
-                  showHoverHint({
-                    text: selected && draggable ? "move run label or joints" : "select cable run",
-                    x: mid.x + 7,
-                    y: mid.y - 16,
-                    targetKey: `${m.id}:cable`,
-                  });
-                }
-                setStageCursor(e, "pointer");
-              }}
-              onMouseLeave={(e) => {
-                hideHoverHint();
-                setStageCursor(e, "");
-              }}
-              hitStrokeWidth={Math.max(10, (cab.thickness ?? 2) + 6)}
-            />
+            <>
+              {validationHighlighted && (
+                <Line
+                  points={m.points}
+                  stroke={VALIDATION_RED}
+                  strokeWidth={(cab.thickness ?? 2) + 8}
+                  lineCap="round"
+                  lineJoin="round"
+                  opacity={0.22}
+                  listening={false}
+                  perfectDrawEnabled={false}
+                />
+              )}
+              <Line
+                points={m.points}
+                stroke={cableColor}
+                strokeWidth={(cab.thickness ?? 2) + (validationHighlighted ? 2.6 : selected ? 1 : hoverActive ? 0.6 : 0)}
+                dash={cab.dash}
+                lineCap="round"
+                lineJoin="round"
+                shadowColor={validationHighlighted || selected || hoverActive ? cableColor : undefined}
+                shadowBlur={validationHighlighted ? 16 : selected ? 8 : hoverActive ? 6 : 0}
+                shadowOpacity={validationHighlighted ? 0.9 : selected ? 0.55 : hoverActive ? HOVER_SHADOW_OPACITY : 0}
+                onClick={onClick}
+                onMouseDown={handlePointerDown}
+                onMouseEnter={(e) => {
+                  if (mid) {
+                    showHoverHint({
+                      text: selected && draggable ? "move run label or joints" : "select cable run",
+                      x: mid.x + 7,
+                      y: mid.y - 16,
+                      targetKey: `${m.id}:cable`,
+                    });
+                  }
+                  setStageCursor(e, "pointer");
+                }}
+                onMouseLeave={(e) => {
+                  hideHoverHint();
+                  setStageCursor(e, "");
+                }}
+                hitStrokeWidth={Math.max(10, (cab.thickness ?? 2) + 6)}
+              />
+            </>
           )}
           {mid && showRunLabel && (
             <Group
@@ -1232,7 +1374,7 @@ function renderMarkup(
               onMouseEnter={(e) => {
                 const canMoveLabel = selected && draggable;
                 showHoverHint({
-                  text: canMoveLabel ? "move label" : "select label",
+                  text: canMoveLabel ? "move label" : lockedMoveHintMessage ? "locked" : "select label",
                   x: mid.x + labelOffset.dx + labelW / 2 + 5,
                   y: mid.y + labelOffset.dy - labelH / 2 - 5,
                   targetKey: `${m.id}:run-label`,
@@ -1244,7 +1386,11 @@ function renderMarkup(
                 setStageCursor(e, "");
               }}
               onMouseDown={(e) => {
-                if (!(selected && draggable)) return;
+                if (!(selected && draggable)) {
+                  onClick(e);
+                  notifyLockedAttempt();
+                  return;
+                }
                 onClick(e);
                 e.cancelBubble = true;
                 e.evt?.stopPropagation?.();
@@ -1271,13 +1417,13 @@ function renderMarkup(
                 width={labelW}
                 height={labelH}
                 fill="#0B1220"
-                stroke={cab.color}
+                stroke={cableColor}
                 strokeWidth={hoverActive ? 0.85 : 0.55}
                 cornerRadius={3}
                 opacity={hoverActive ? 0.96 : 0.92}
-                shadowColor={hoverActive ? cab.color : "rgba(0,0,0,0.55)"}
-                shadowBlur={hoverActive ? 7 : 3}
-                shadowOpacity={hoverActive ? HOVER_SHADOW_OPACITY : 0.55}
+                shadowColor={hoverActive ? cableColor : "rgba(0,0,0,0.55)"}
+                shadowBlur={validationHighlighted ? 10 : hoverActive ? 7 : 3}
+                shadowOpacity={validationHighlighted ? 0.72 : hoverActive ? HOVER_SHADOW_OPACITY : 0.55}
                 perfectDrawEnabled={false}
               />
               {selected && draggable && (
@@ -1309,18 +1455,19 @@ function renderMarkup(
             </Group>
           )}
           {selected &&
-            draggable &&
+            (draggable || !!lockedMoveHintMessage) &&
             m.points.length >= 4 &&
             m.points.map((_, i) => {
               if (i % 2 !== 0) return null;
               const pointIndex = i / 2;
               const endpoint = cableEndpointForIndex(m.points, pointIndex);
-              if (
+              const endpointLocked = !!(
                 endpoint &&
                 hasLockedAttachedInfrastructure(sheetMarkups, m.id, endpoint)
-              ) {
-                return null;
-              }
+              );
+              const jointLockedHintMessage =
+                endpointLocked || lockedMoveHintMessage ? "Locked. Unlock to move." : undefined;
+              const jointDraggable = draggable && !endpointLocked;
               const x = m.points[i];
               const y = m.points[i + 1];
               return (
@@ -1328,16 +1475,16 @@ function renderMarkup(
                   key={`${m.id}-joint-${pointIndex}`}
                   x={x}
                   y={y}
-                  draggable
+                  draggable={jointDraggable}
                   dragDistance={2}
                   onMouseEnter={(e) => {
                     showHoverHint({
-                      text: "move joint",
+                      text: jointDraggable ? "move joint" : "locked",
                       x: x + 7,
                       y: y - 15,
                       targetKey: `${m.id}:joint:${pointIndex}`,
                     });
-                    setStageCursor(e, "grab");
+                    setStageCursor(e, jointDraggable ? "grab" : "pointer");
                   }}
                   onMouseLeave={(e) => {
                     hideHoverHint();
@@ -1347,6 +1494,7 @@ function renderMarkup(
                     onClick(e);
                     e.cancelBubble = true;
                     e.evt?.stopPropagation?.();
+                    if (jointLockedHintMessage) notifyLockedAttempt(jointLockedHintMessage);
                   }}
                   onDragStart={(e) => {
                     e.cancelBubble = true;
@@ -1380,10 +1528,10 @@ function renderMarkup(
                   <Circle
                     radius={2.6}
                     fill="#0B1220"
-                    stroke={cab.color}
+                    stroke={cableColor}
                     strokeWidth={hovered ? 1.15 : 0.9}
                     opacity={hovered ? 1 : 0.92}
-                    shadowColor={cab.color}
+                    shadowColor={cableColor}
                     shadowBlur={hovered ? 4 : 0}
                     shadowOpacity={hovered ? HOVER_SHADOW_OPACITY : 0}
                     listening={false}
@@ -1411,7 +1559,7 @@ function renderMarkup(
           fontFamily="Inter"
           fill={m.color}
           onClick={onClick}
-          onMouseDown={onClick}
+          onMouseDown={handlePointerDown}
           onMouseEnter={() => {
             showHoverHint({
               text: draggable ? "move text" : "select text",
@@ -1589,7 +1737,7 @@ function renderMarkup(
           fill={m.fill}
           strokeWidth={selected ? 2.5 : hovered ? 1.8 : 1.5}
           onClick={onClick}
-          onMouseDown={onClick}
+          onMouseDown={handlePointerDown}
           onMouseEnter={() => {
             showHoverHint({
               text: draggable ? "move shape" : "select shape",
@@ -1905,4 +2053,14 @@ function cameraAimHandlePoint(
 function setStageCursor(e: any, cursor: string) {
   const container = e.target?.getStage?.()?.container?.();
   if (container) container.style.cursor = cursor;
+}
+
+function isLockHintMovableMarkup(markup: Markup) {
+  return (
+    markup.kind === "device" ||
+    markup.kind === "cable" ||
+    markup.kind === "text" ||
+    markup.kind === "rect" ||
+    markup.kind === "schedule"
+  );
 }

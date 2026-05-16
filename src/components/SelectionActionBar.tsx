@@ -42,7 +42,12 @@ export function SelectionActionBar() {
   const aboveOffset = 14;
 
   const allLocked = items.every((m) => m.locked);
-  const showLockPulse = !!lockMoveHint && items.some((m) => m.kind === "device" && m.locked);
+  const lockHintTargetsSelected =
+    !!lockMoveHint?.targetIds?.some((id) => selectedSet.has(id));
+  const showLockPulse =
+    !!lockMoveHint &&
+    (lockHintTargetsSelected ||
+      (!lockMoveHint.targetIds?.length && items.some((m) => m.locked)));
 
   const onDuplicate = () => {
     const newIds: string[] = [];
@@ -101,7 +106,7 @@ export function SelectionActionBar() {
         transform: `translate(${sx}px, ${sy - aboveOffset}px) translate(-50%, -100%)`,
       }}
     >
-      <div className="pointer-events-auto panel rounded-lg flex items-center divide-x divide-white/5 overflow-hidden animate-scale-in shadow-glass">
+      <div className="pointer-events-auto panel rounded-lg flex items-center divide-x divide-white/5 animate-scale-in shadow-glass">
         <span className="px-2 py-1.5 font-mono text-[10px] text-amber-knox uppercase tracking-wider">
           {items.length === 1 ? labelFor(items[0]) : `${items.length} items`}
         </span>
@@ -123,17 +128,27 @@ export function SelectionActionBar() {
             <Cable className="w-3.5 h-3.5" />
           </button>
         )}
-        <button
-          onClick={onLockToggle}
-          className={`px-2 py-1.5 hover:bg-white/5 text-ink-200 hover:text-ink-50 ${
-            showLockPulse
-              ? "bg-amber-knox/15 text-amber-knox ring-1 ring-inset ring-amber-knox/50 animate-pulse"
-              : ""
-          }`}
-          title={allLocked ? "Unlock" : "Lock"}
-        >
-          {allLocked ? <Lock className="w-3.5 h-3.5" /> : <LockOpen className="w-3.5 h-3.5" />}
-        </button>
+        <div className="relative">
+          <button
+            onClick={onLockToggle}
+            className={`px-2 py-1.5 hover:bg-white/5 text-ink-200 hover:text-ink-50 ${
+              showLockPulse
+                ? "bg-signal-red/20 text-signal-red ring-1 ring-inset ring-signal-red/70 shadow-[0_0_12px_rgba(255,92,122,0.45)] animate-pulse"
+                : ""
+            }`}
+            title={allLocked ? "Unlock" : "Lock"}
+          >
+            {allLocked ? <Lock className="w-3.5 h-3.5" /> : <LockOpen className="w-3.5 h-3.5" />}
+          </button>
+          {showLockPulse && (
+            <div
+              key={lockMoveHint!.pulseKey}
+              className="absolute left-1/2 top-full mt-1 -translate-x-1/2 rounded-md border border-signal-red/40 bg-ink-900/95 px-2 py-1 text-[10px] font-mono text-signal-red shadow-glass pointer-events-none animate-fade-in whitespace-nowrap"
+            >
+              {lockMoveHint!.message}
+            </div>
+          )}
+        </div>
         <button
           onClick={onDelete}
           className="px-2 py-1.5 hover:bg-signal-red/10 text-signal-red"

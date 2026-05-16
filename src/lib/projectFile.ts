@@ -39,7 +39,7 @@ import type {
   SheetSource,
 } from "./sheetSource";
 import { fromBase64, toBase64 } from "./sheetSource";
-import { migrateProjectV1toV2 } from "./migrate";
+import { migrateProject } from "./migrate";
 
 const FILE_VERSION = "2.0";
 const MIME = "application/json";
@@ -173,7 +173,10 @@ type ProjectFilePayload = {
  * Every source kind is encoded into the JSON; the file is fully self-
  * contained and can be opened on any machine without a server.
  */
-export function exportProjectFile(project: Project): void {
+export function serializeProjectFilePayload(
+  project: Project,
+  exportedAt = new Date().toISOString(),
+): ProjectFilePayload {
   const sheets: SerializedSheet[] = project.sheets.map((sh) => {
     const { pdfBytes, objectUrl: _url, source, ...rest } = sh;
     // Prefer canonical .source; fall back to legacy pdfBytes if present.
@@ -186,13 +189,24 @@ export function exportProjectFile(project: Project): void {
     };
   });
 
-  const payload: ProjectFilePayload = {
+  return {
     knoxnet: FILE_VERSION,
-    exportedAt: new Date().toISOString(),
+    exportedAt,
     project: { ...project, sheets },
   };
+}
 
-  const blob = new Blob([JSON.stringify(payload)], { type: MIME });
+export function serializeProjectFile(
+  project: Project,
+  exportedAt = new Date().toISOString(),
+): string {
+  return JSON.stringify(serializeProjectFilePayload(project, exportedAt));
+}
+
+export function exportProjectFile(project: Project): void {
+  const payload = serializeProjectFile(project);
+
+  const blob = new Blob([payload], { type: MIME });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -208,9 +222,7 @@ export function exportProjectFile(project: Project): void {
  * (pdfBytesB64 on each sheet) and v2.0 (sourceSerialized on each sheet)
  * by routing through the migrator after rehydrating bytes.
  */
-export async function importProjectFile(file: File): Promise<Project> {
-  const text = await file.text();
-
+export async function parseProjectFileText(text: string): Promise<Project> {
   let payload: unknown;
   try {
     payload = JSON.parse(text);
@@ -256,5 +268,9 @@ export async function importProjectFile(file: File): Promise<Project> {
 
   // Run the migrator so legacy records gain a v2-shaped `source`
   // (idempotent on freshly-exported v2 files).
-  return migrateProjectV1toV2(project);
+  return migrateProject(project, p.knoxnet);
+}
+
+export async function importProjectFile(file: File): Promise<Project> {
+  return parseProjectFileText(await file.text());
 }

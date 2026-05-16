@@ -14,6 +14,7 @@ import { isDevicePortInUse, withAutoAssignedConnectionPorts } from "../src/lib/c
 import { connectedDevicesForSwitch } from "../src/lib/networkConfig";
 import { scheduleBlockContent } from "../src/lib/scheduleBlocks";
 import { selectEntities } from "../src/reports/engine";
+import { safeDeadReferenceIssueIds, validateProject } from "../src/lib/validation";
 
 const device = (overrides: Partial<DeviceMarkup> = {}): DeviceMarkup => ({
   id: "device-1",
@@ -120,7 +121,7 @@ describe("project undo/redo", () => {
     expect(activeMarkup<DeviceMarkup>("device-1")).toMatchObject({ x: 10, y: 20 });
   });
 
-  it("rate-limits locked-device move hints outside project history", () => {
+  it("rate-limits locked move hints outside project history", () => {
     vi.useFakeTimers();
     vi.setSystemTime(1000);
     const store = useProjectStore.getState();
@@ -129,7 +130,8 @@ describe("project undo/redo", () => {
     const first = useProjectStore.getState().lockMoveHint;
 
     expect(first).toMatchObject({
-      message: "Devices are locked. Unlock to move.",
+      message: "Locked. Unlock to move.",
+      scope: "global",
       shownAt: 1000,
       pulseKey: 1000,
     });
@@ -144,6 +146,27 @@ describe("project undo/redo", () => {
     expect(useProjectStore.getState().lockMoveHint).toMatchObject({
       shownAt: 2600,
       pulseKey: 2600,
+    });
+    expect(useProjectStore.getState().history.past).toHaveLength(0);
+  });
+
+  it("records locked cable run move hints as selected-item UI state", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(5000);
+    const store = useProjectStore.getState();
+
+    store.notifyLockedMoveAttempt({
+      message: "Locked. Unlock to move.",
+      scope: "selection",
+      targetIds: ["cable-1"],
+    });
+
+    expect(useProjectStore.getState().lockMoveHint).toMatchObject({
+      message: "Locked. Unlock to move.",
+      scope: "selection",
+      targetIds: ["cable-1"],
+      shownAt: 5000,
+      pulseKey: 5000,
     });
     expect(useProjectStore.getState().history.past).toHaveLength(0);
   });
@@ -380,6 +403,88 @@ describe("project undo/redo", () => {
     expect(activeMarkup<DeviceMarkup>("cam-2").systemConfig?.network?.vlan).toBe(1);
   });
 
+  it("undoes and redoes validation auto-resolve actions", () => {
+    const store = useProjectStore.getState();
+    store.loadProject(
+      {
+        ...project([
+          device({ id: "sw-1", tag: "SW-01", deviceId: "net-switch-poe" }),
+          device({ id: "cam-1", tag: "CAM-01", deviceId: "cam-dome", category: "cameras" }),
+          device({ id: "cam-2", tag: "CAM-02", deviceId: "cam-dome", category: "cameras" }),
+        ]),
+        connections: [
+          { id: "conn-1", fromTag: "CAM-01", toTag: "SW-01", toPortId: "port-6", toPort: "Port 6", medium: "cat6" },
+          { id: "conn-2", fromTag: "CAM-02", toTag: "SW-01", toPortId: "port-6", toPort: "Port 6", medium: "cat6" },
+        ],
+      },
+    );
+    store.clearHistory();
+    const issue = validateProject(useProjectStore.getState().project!).find(
+      (candidate) => candidate.code === "duplicate-connection-port",
+    )!;
+
+    const result = store.autoResolveValidationIssue(issue.id);
+
+    expect(result.resolved).toBe(true);
+    expect(useProjectStore.getState().project?.connections?.map((conn) => conn.toPortId)).toEqual([
+      "port-6",
+      "port-7",
+    ]);
+    expect(useProjectStore.getState().history.past).toHaveLength(1);
+
+    store.undo();
+    expect(useProjectStore.getState().project?.connections?.map((conn) => conn.toPortId)).toEqual([
+      "port-6",
+      "port-6",
+    ]);
+
+    store.redo();
+    expect(useProjectStore.getState().project?.connections?.map((conn) => conn.toPortId)).toEqual([
+      "port-6",
+      "port-7",
+    ]);
+  });
+
+  it("undoes and redoes bulk dead-reference cleanup", () => {
+    const store = useProjectStore.getState();
+    store.loadProject(
+      project([
+        cable({
+          id: "run-1",
+          pointAttachments: [{ deviceMarkupId: "missing", deviceTag: "CAM-MISSING" }],
+        }),
+        device({
+          id: "cam-1",
+          tag: "CAM-01",
+          deviceId: "cam-dome",
+          category: "cameras",
+          attachedRunEndpoint: { cableMarkupId: "missing-run", endpoint: "A" },
+        }),
+      ]),
+    );
+    store.clearHistory();
+    const issueIds = safeDeadReferenceIssueIds(validateProject(useProjectStore.getState().project!));
+
+    const result = store.autoResolveValidationIssues(issueIds);
+
+    expect(result.resolved).toBe(true);
+    expect(activeMarkup<CableMarkup>("run-1").pointAttachments).toEqual([null]);
+    expect(activeMarkup<DeviceMarkup>("cam-1").attachedRunEndpoint).toBeUndefined();
+    expect(useProjectStore.getState().history.past).toHaveLength(1);
+
+    store.undo();
+    expect(activeMarkup<CableMarkup>("run-1").pointAttachments).toEqual([
+      { deviceMarkupId: "missing", deviceTag: "CAM-MISSING" },
+    ]);
+    expect(activeMarkup<DeviceMarkup>("cam-1").attachedRunEndpoint).toMatchObject({
+      cableMarkupId: "missing-run",
+    });
+
+    store.redo();
+    expect(activeMarkup<CableMarkup>("run-1").pointAttachments).toEqual([null]);
+    expect(activeMarkup<DeviceMarkup>("cam-1").attachedRunEndpoint).toBeUndefined();
+  });
+
   it("undoes nesting and unnesting changes", () => {
     const headEnd = device({
       id: "headend-1",
@@ -572,6 +677,40 @@ describe("project undo/redo", () => {
       );
     },
   );
+
+  it("clears duplicate connection validation when a linked duplicate cable is deleted", () => {
+    const store = useProjectStore.getState();
+    const cam8 = device({ id: "cam-8", tag: "CAM-08", deviceId: "cam-dome", category: "cameras", x: 80 });
+    const cam20 = device({ id: "cam-20", tag: "CAM-20", deviceId: "cam-dome", category: "cameras", x: 160 });
+    const run1 = buildCableRunMarkup("run-1", "cat6", [
+      endpointFromMarkup(cam8)!,
+      endpointFromMarkup(cam20)!,
+    ]);
+    const run2 = buildCableRunMarkup("run-2", "cat6", [
+      endpointFromMarkup(cam8)!,
+      endpointFromMarkup(cam20)!,
+    ]);
+    const base = project([cam8, cam20, run1, run2]);
+    store.loadProject({
+      ...base,
+      connections: [
+        { id: "conn-1", fromTag: "CAM-08", toTag: "CAM-20", medium: "cat6", cableMarkupId: "run-1" },
+        { id: "conn-2", fromTag: "CAM-08", toTag: "CAM-20", medium: "cat6", cableMarkupId: "run-2" },
+      ],
+    });
+    store.clearHistory();
+
+    expect(validateProject(useProjectStore.getState().project!).some((issue) => issue.code === "duplicate-run")).toBe(true);
+
+    store.deleteMarkup("run-2");
+
+    const afterDelete = useProjectStore.getState().project!;
+    expect(afterDelete.connections?.map((connection) => connection.id)).toEqual(["conn-1"]);
+    expect(validateProject(afterDelete).some((issue) => issue.code === "duplicate-run")).toBe(false);
+
+    store.undo();
+    expect(validateProject(useProjectStore.getState().project!).some((issue) => issue.code === "duplicate-run")).toBe(true);
+  });
 
   it("removing a logical SFP connection frees the switch port and connected-device row", () => {
     const store = useProjectStore.getState();

@@ -75,6 +75,21 @@ describe("network config helpers", () => {
     ]);
   });
 
+  it("does not list ordinary pull boxes as switch connected endpoints", () => {
+    const sw = device({ id: "sw", tag: "SW-01", deviceId: "net-switch-poe" });
+    const pullBox = device({
+      id: "pb",
+      tag: "PB-03",
+      deviceId: "site-pullbox",
+      category: "site",
+    });
+    const p = project([sw, pullBox], [
+      { id: "bad", fromTag: "SW-01", fromPort: "Port 1", toTag: "PB-03" },
+    ]);
+
+    expect(connectedDevicesForSwitch(p, sw)).toEqual([]);
+  });
+
   it("assigns default IP config to new network-addressable devices without collisions", () => {
     const existing = device({
       id: "cam-1",

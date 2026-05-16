@@ -143,7 +143,7 @@ export function useToolGesture(
       addMarkup({
         id: uid(),
         kind: "cable",
-        layer: "cable",
+        layer: activeCableId === "conduit" ? "conduit" : "cable",
         cableId: activeCableId,
         ...(activeCableId === "conduit"
           ? { conduitType: activeConduitType, conduitSize: activeConduitSize }

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   useProjectStore,
   selectActiveSheet,
+  effectiveMarkupLayerId,
   type CableMarkup,
   type Markup,
   type DeviceMarkup,
@@ -55,8 +56,12 @@ import { categoryColor, categoryLabel } from "../brand/tokens";
 import { resolveCoverage, type EffectiveCoverage } from "../lib/coverage";
 import {
   validateProject,
+  safeDeadReferenceIssueIds,
   validationIssuesForEntity,
+  validationMarkupIdsForIssues,
+  validationPortConflictsForDevice,
   type ValidationIssue,
+  type ValidationPortConflict,
 } from "../lib/validation";
 import {
   buildAutoIpAssignmentPatches,
@@ -360,20 +365,110 @@ function ValidationWarnings({
   title?: string;
   limit?: number;
 }) {
+  const setValidationHighlights = useProjectStore((s) => s.setValidationHighlights);
+  const clearValidationHighlights = useProjectStore((s) => s.clearValidationHighlights);
+  const setValidationIssueMode = useProjectStore((s) => s.setValidationIssueMode);
+  const validationIssueMode = useProjectStore((s) => s.validationIssueMode);
+  const autoResolveValidationIssue = useProjectStore((s) => s.autoResolveValidationIssue);
+  const autoResolveValidationIssues = useProjectStore((s) => s.autoResolveValidationIssues);
   if (issues.length === 0) return null;
   const shown = issues.slice(0, limit);
+  const allMarkupIds = validationMarkupIdsForIssues(issues);
+  const safeDeadIssueIds = safeDeadReferenceIssueIds(issues);
   return (
     <div className="rounded-md border border-amber-knox/30 bg-amber-knox/10 px-2 py-2 text-[11px] text-ink-200 space-y-1.5">
-      <div className="flex items-center gap-1.5 font-mono uppercase tracking-wider text-amber-knox text-[10px]">
-        <AlertTriangle className="w-3.5 h-3.5" />
-        <span>{title}</span>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 font-mono uppercase tracking-wider text-amber-knox text-[10px]">
+          <AlertTriangle className="w-3.5 h-3.5" />
+          <span>{title}</span>
+        </div>
+        {allMarkupIds.length > 0 && (
+          <button
+            onClick={() => {
+              if (validationIssueMode) clearValidationHighlights();
+              else {
+                setValidationHighlights(allMarkupIds);
+                setValidationIssueMode(true);
+              }
+            }}
+            className="text-[10px] font-mono text-amber-knox hover:text-white"
+            title="Highlight all affected canvas items in red"
+          >
+            {validationIssueMode ? "clear" : "highlight all"}
+          </button>
+        )}
       </div>
+      {safeDeadIssueIds.length > 1 && (
+        <button
+          type="button"
+          onClick={() => autoResolveValidationIssues(safeDeadIssueIds)}
+          className="w-full rounded border border-amber-knox/40 bg-amber-knox/10 px-2 py-1 text-left text-[10px] font-mono text-amber-knox hover:bg-amber-knox/15"
+          title="Clear all safe stale cable references without deleting real cable runs."
+        >
+          Clear {safeDeadIssueIds.length} safe dead cable references
+        </button>
+      )}
       <ul className="space-y-1">
-        {shown.map((issue) => (
-          <li key={issue.id} className="leading-snug text-ink-300">
-            {issue.message}
+        {shown.map((issue) => {
+          const affectedIds = validationMarkupIdsForIssues([issue]);
+          return (
+          <li
+            key={issue.id}
+            className="leading-snug text-ink-300 rounded border border-transparent hover:border-amber-knox/20 hover:bg-ink-900/20 p-1"
+            onMouseEnter={() => affectedIds.length > 0 && setValidationHighlights(affectedIds)}
+          >
+            <div>{issue.message}</div>
+            {(issue.details?.length || issue.resolver || affectedIds.length > 0) && (
+              <div className="mt-1 space-y-1">
+                {issue.details?.slice(0, 2).map((detail) => (
+                  <div key={detail} className="text-[10px] text-ink-500">
+                    {detail}
+                  </div>
+                ))}
+                <div className="flex flex-wrap gap-1.5">
+                  {affectedIds.length > 0 && (
+                    <button
+                      onClick={() => setValidationHighlights(affectedIds)}
+                      className="rounded border border-signal-red/40 px-1.5 py-0.5 text-[10px] font-mono text-signal-red hover:bg-signal-red/10"
+                      title="Highlight affected devices and cable runs"
+                    >
+                      Highlight
+                    </button>
+                  )}
+                  {issue.resolver?.options?.length
+                    ? issue.resolver.options.map((option) => (
+                        <button
+                          key={option.id}
+                          onClick={() => autoResolveValidationIssue(issue.id, option.id)}
+                          className={`rounded border px-1.5 py-0.5 text-[10px] font-mono hover:bg-amber-knox/10 ${
+                            option.destructive
+                              ? "border-signal-red/40 text-signal-red hover:bg-signal-red/10"
+                              : "border-amber-knox/40 text-amber-knox"
+                          }`}
+                          title={option.description}
+                        >
+                          {option.label}
+                        </button>
+                      ))
+                    : issue.resolver && (
+                        <button
+                          onClick={() => autoResolveValidationIssue(issue.id)}
+                          className={`rounded border px-1.5 py-0.5 text-[10px] font-mono ${
+                            issue.resolver.destructive
+                              ? "border-signal-red/40 text-signal-red hover:bg-signal-red/10"
+                              : "border-amber-knox/40 text-amber-knox hover:bg-amber-knox/10"
+                          }`}
+                          title={issue.resolver.description}
+                        >
+                          {issue.resolver.label}
+                        </button>
+                      )}
+                </div>
+              </div>
+            )}
           </li>
-        ))}
+          );
+        })}
       </ul>
       {issues.length > shown.length && (
         <div className="text-[10px] text-ink-500">
@@ -955,7 +1050,7 @@ function DeviceProps({
       <Field label="Layer">
         <select
           className="input"
-          value={markup.layer}
+          value={effectiveMarkupLayerId(markup)}
           onChange={(e) => onChange({ layer: e.target.value as any })}
         >
           {layers.map((l) => (
@@ -2093,6 +2188,7 @@ function SwitchSection({
 function ConnectedDevicesSection({
   devices,
   switchPorts,
+  portConflicts,
   startIp,
   vlan,
   onStartIpChange,
@@ -2110,6 +2206,7 @@ function ConnectedDevicesSection({
 }: {
   devices: ConnectedSwitchDevice[];
   switchPorts: PortSpec[] | undefined;
+  portConflicts: ValidationPortConflict[];
   startIp: string;
   vlan: string;
   onStartIpChange: (value: string) => void;
@@ -2127,6 +2224,21 @@ function ConnectedDevicesSection({
 }) {
   const [hoveredConnectionId, setHoveredConnectionId] = useState<string | null>(null);
   const [activePortId, setActivePortId] = useState<string | null>(null);
+  const activePortLabel = switchPorts?.find((port) => port.id === activePortId)?.label;
+  const activePortConflict = activePortLabel
+    ? portConflicts.find((conflict) => conflict.portLabel === activePortLabel)
+    : undefined;
+  const selectedRows = activePortLabel
+    ? devices.filter((row) => row.switchPort === activePortLabel)
+    : [];
+  const selectedConnectionIds = new Set(selectedRows.map((row) => row.connection.id));
+  const orderedDevices =
+    selectedRows.length > 0
+      ? [
+          ...selectedRows,
+          ...devices.filter((row) => !selectedConnectionIds.has(row.connection.id)),
+        ]
+      : devices;
   const setHoveredRow = (row: ConnectedSwitchDevice | undefined) => {
     setHoveredConnectionId(row?.connection.id ?? null);
     onHintConnection(row);
@@ -2198,6 +2310,7 @@ function ConnectedDevicesSection({
       <SwitchPortStrip
         ports={switchPorts}
         devices={devices}
+        portConflicts={portConflicts}
         hoveredConnectionId={hoveredConnectionId}
         activePortId={activePortId}
         onHoverDevice={setHoveredRow}
@@ -2231,19 +2344,35 @@ function ConnectedDevicesSection({
 
       {devices.length === 0 ? (
         <div className="text-[11px] text-ink-500 leading-snug">
-          No devices are connected to this switch yet. Add connections or cable runs and they will appear here.
+          {activePortLabel ? (
+            <>
+              <span className="font-mono text-ink-200">{activePortLabel}</span> is empty. Add or edit a connection to use this port.
+            </>
+          ) : (
+            "No devices are connected to this switch yet. Add connections or cable runs and they will appear here."
+          )}
         </div>
       ) : (
         <div className="space-y-1.5">
-          {devices.map(({ connection, device, devicePort, switchPort, viaInternalEndpoint }) => {
+          {activePortLabel && selectedRows.length === 0 && (
+            <div className="rounded-md border border-white/5 bg-ink-900/20 p-2 text-[11px] text-ink-400">
+              <span className="font-mono text-ink-200">{activePortLabel}</span> is empty. Add or edit a connection to use this port.
+            </div>
+          )}
+          {orderedDevices.map(({ connection, device, devicePort, switchPort, viaInternalEndpoint }) => {
             const network = device.systemConfig?.network ?? {};
+            const selectedPortRow = activePortLabel === switchPort;
             return (
               <div
                 key={`${connection.id}:${device.id}`}
                 onMouseEnter={() => setHoveredRow({ connection, device, devicePort, switchPort, viaInternalEndpoint })}
                 onMouseLeave={() => setHoveredRow(undefined)}
                 className={`rounded-md border bg-ink-900/20 p-2 space-y-1.5 transition-colors ${
-                  hoveredConnectionId === connection.id
+                  selectedPortRow && activePortConflict
+                    ? "border-signal-red/50 bg-signal-red/10"
+                    : selectedPortRow
+                    ? "border-signal-blue/60 bg-signal-blue/10"
+                    : hoveredConnectionId === connection.id
                     ? "border-signal-blue/50"
                     : "border-white/5"
                 }`}
@@ -2323,6 +2452,7 @@ function ConnectedDevicesSection({
 function SwitchPortStrip({
   ports,
   devices,
+  portConflicts,
   hoveredConnectionId,
   activePortId,
   onHoverDevice,
@@ -2335,6 +2465,7 @@ function SwitchPortStrip({
 }: {
   ports: PortSpec[] | undefined;
   devices: ConnectedSwitchDevice[];
+  portConflicts: ValidationPortConflict[];
   hoveredConnectionId: string | null;
   activePortId: string | null;
   onHoverDevice: (row: ConnectedSwitchDevice | undefined) => void;
@@ -2353,14 +2484,22 @@ function SwitchPortStrip({
   const sfpPorts = networkPorts.filter((port) => port.kind === "fiber").slice(0, 8);
   const visiblePorts = [...copperPorts, ...sfpPorts];
 
-  const assignments = new Map<string, ConnectedSwitchDevice>();
+  const assignments = new Map<string, ConnectedSwitchDevice[]>();
   for (const row of devices) {
     const port = visiblePorts.find((candidate) => candidate.label === row.switchPort);
-    if (port) assignments.set(port.id, row);
+    if (!port) continue;
+    const rows = assignments.get(port.id) ?? [];
+    rows.push(row);
+    assignments.set(port.id, rows);
   }
+  const conflicts = new Map(
+    portConflicts.map((conflict) => [conflict.portLabel, conflict]),
+  );
   const hoveredDevice = devices.find((row) => row.connection.id === hoveredConnectionId);
   const activePort = activePortId ? visiblePorts.find((port) => port.id === activePortId) : undefined;
-  const activeRow = activePortId ? assignments.get(activePortId) : undefined;
+  const activeRows = activePortId ? assignments.get(activePortId) ?? [] : [];
+  const activeRow = activeRows[0];
+  const activeConflict = activePort ? conflicts.get(activePort.label) : undefined;
 
   useLayoutEffect(() => {
     if (!activePortId) return;
@@ -2388,8 +2527,15 @@ function SwitchPortStrip({
   if (networkPorts.length === 0) return null;
 
   const renderPort = (port: PortSpec) => {
-    const row = assignments.get(port.id);
-    const active = row?.connection.id === hoveredConnectionId || port.id === activePortId;
+    const rows = assignments.get(port.id) ?? [];
+    const row = rows[0];
+    const conflict = conflicts.get(port.label);
+    const active = rows.some((candidate) => candidate.connection.id === hoveredConnectionId) || port.id === activePortId;
+    const label = conflict
+      ? `${port.label} conflict: ${conflict.deviceTags.join(", ")}`
+      : rows.length > 0
+        ? `${port.label} assigned to ${rows.map((candidate) => candidate.device.tag).join(", ")}`
+        : `${port.label} available`;
     return (
       <div key={port.id}>
         <button
@@ -2398,14 +2544,19 @@ function SwitchPortStrip({
             if (node) portRefs.current.set(port.id, node);
             else portRefs.current.delete(port.id);
           }}
-          aria-label={row ? `${port.label} assigned to ${row.device.tag}` : `${port.label} available`}
+          aria-label={label}
+          title={label}
           onMouseEnter={() => onHoverDevice(row)}
           onMouseLeave={() => onHoverDevice(undefined)}
           onClick={() => onTogglePortMenu(port.id)}
           className={`h-4 w-full rounded-sm border text-[8px] font-mono leading-none transition-colors ${
-            active
+            conflict
+              ? active
+                ? "border-signal-red bg-signal-red/30 text-signal-red"
+                : "border-signal-red/60 bg-signal-red/20 text-signal-red"
+            : active
               ? "border-signal-blue bg-signal-blue/30 text-signal-blue"
-              : row
+              : rows.length > 0
                 ? "border-amber-knox/50 bg-amber-knox/20 text-amber-knox"
                 : "border-white/10 bg-ink-900/50 text-ink-600"
           }`}
@@ -2425,6 +2576,8 @@ function SwitchPortStrip({
         <div className="text-[10px] text-ink-500 truncate">
           {hoveredDevice
             ? `${hoveredDevice.switchPort || "Port"} -> ${hoveredDevice.device.tag}`
+            : activeConflict
+              ? `${activeConflict.portLabel} conflict: ${activeConflict.deviceTags.join(", ")}`
             : `${assignments.size} used / ${visiblePorts.length} available`}
         </div>
       </div>
@@ -2444,8 +2597,13 @@ function SwitchPortStrip({
           {activeRow ? (
             <>
               <div className="px-1.5 py-1 text-[10px] text-ink-400 truncate">
-                {activePort.label} to {activeRow.device.tag}
+                {activePort.label} to {activeRows.map((row) => row.device.tag).join(", ")}
               </div>
+              {activeConflict && (
+                <div className="mx-1.5 mb-1 rounded border border-signal-red/30 bg-signal-red/10 px-1.5 py-1 text-[10px] text-signal-red leading-snug">
+                  Port conflict: {activeConflict.deviceTags.join(", ")}
+                </div>
+              )}
               <button
                 type="button"
                 onClick={() => onSelectDevice(activeRow.device.id)}
@@ -2623,6 +2781,10 @@ function SystemConfigSection({
     () => (project && sections.switchCfg ? connectedDevicesForSwitch(project, markup) : []),
     [project, sections.switchCfg, markup],
   );
+  const switchPortConflicts = useMemo(
+    () => (project && sections.switchCfg ? validationPortConflictsForDevice(project, markup) : []),
+    [project, sections.switchCfg, markup],
+  );
 
   const patchCfg = (patch: Partial<DeviceSystemConfig>) =>
     onChange({ systemConfig: { ...cfg, ...patch } });
@@ -2783,6 +2945,7 @@ function SystemConfigSection({
             <ConnectedDevicesSection
               devices={connectedSwitchDevices}
               switchPorts={myPorts}
+              portConflicts={switchPortConflicts}
               startIp={autoStartIp}
               vlan={autoVlan}
               onStartIpChange={setAutoStartIp}

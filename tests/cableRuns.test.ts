@@ -794,6 +794,59 @@ describe("cable run helpers", () => {
     ]);
   });
 
+  it("assigns switch ports to camera and AP terminals beyond pull boxes", () => {
+    const store = useProjectStore.getState();
+    const switchMarkup = device({
+      id: "sw-1",
+      layer: "network",
+      category: "network",
+      deviceId: "net-switch-poe",
+      x: 10,
+      y: 20,
+      tag: "SW-01",
+    });
+    const pullBox = device({
+      id: "pb-3",
+      layer: "site",
+      category: "site",
+      deviceId: "site-pullbox",
+      x: 50,
+      y: 20,
+      tag: "PB-03",
+    });
+    const camera = device({ id: "cam-8", x: 90, y: 20, tag: "CAM-08" });
+    const ap = device({
+      id: "ap-1",
+      layer: "network",
+      category: "network",
+      deviceId: "net-ap-i",
+      x: 90,
+      y: 50,
+      tag: "AP-01",
+    });
+    store.addMarkup(switchMarkup);
+    store.addMarkup(pullBox);
+    store.addMarkup(camera);
+    store.addMarkup(ap);
+
+    for (const target of [camera, ap]) {
+      expect(store.placeCableRunEndpoint(endpointFromMarkup(switchMarkup)!)).toBe("started");
+      expect(store.placeCableRunEndpoint(endpointFromMarkup(pullBox)!)).toBe("routed");
+      expect(store.placeCableRunEndpoint(endpointFromMarkup(target)!)).toBe("completed");
+    }
+
+    const project = useProjectStore.getState().project!;
+    expect(project.connections?.map((conn) => [conn.fromTag, conn.toTag])).toEqual([
+      ["SW-01", "CAM-08"],
+      ["SW-01", "AP-01"],
+    ]);
+    expect(project.connections?.map((conn) => conn.fromPortId)).toEqual(["port-1", "port-2"]);
+    expect(project.connections?.map((conn) => conn.toPortId)).toEqual(["eth0", "eth0"]);
+    expect(
+      project.sheets[0].markups.find((m) => m.kind === "device" && m.id === "pb-3"),
+    ).not.toMatchObject({ systemConfig: { switchPort: expect.any(String) } });
+  });
+
   it("uses junction boxes as intermediate path nodes before final device", () => {
     const store = useProjectStore.getState();
 
@@ -957,6 +1010,53 @@ describe("cable run helpers", () => {
     expect(useProjectStore.getState().cableRunDraft?.points).toMatchObject([
       { x: 10, y: 20 },
       { x: 40, y: 20 },
+    ]);
+  });
+
+  it("keeps multi-device drops via pull boxes assigned to final devices", () => {
+    const store = useProjectStore.getState();
+    const switchMarkup = device({
+      id: "sw-1",
+      layer: "network",
+      category: "network",
+      deviceId: "net-switch-poe",
+      x: 10,
+      y: 20,
+      tag: "SW-01",
+    });
+    const pullBox = device({
+      id: "pb-1",
+      layer: "site",
+      category: "site",
+      deviceId: "site-pullbox",
+      x: 50,
+      y: 20,
+      tag: "PB-01",
+    });
+    const camera = device({ id: "cam-1", x: 90, y: 40, tag: "CAM-01" });
+    const ap = device({
+      id: "ap-1",
+      layer: "network",
+      category: "network",
+      deviceId: "net-ap-i",
+      x: 90,
+      y: 70,
+      tag: "AP-01",
+    });
+    store.addMarkup(switchMarkup);
+    store.addMarkup(pullBox);
+    store.addMarkup(camera);
+    store.addMarkup(ap);
+
+    store.placeCableRunEndpoint(endpointFromMarkup(switchMarkup)!);
+    store.placeCableRunEndpoint(endpointFromMarkup(pullBox)!);
+    expect(store.branchCableRunEndpoint(endpointFromMarkup(camera)!)).toBe("completed");
+    expect(store.branchCableRunEndpoint(endpointFromMarkup(ap)!)).toBe("completed");
+
+    const connections = useProjectStore.getState().project?.connections ?? [];
+    expect(connections.map((conn) => [conn.fromTag, conn.toTag, conn.fromPortId])).toEqual([
+      ["SW-01", "CAM-01", "port-1"],
+      ["SW-01", "AP-01", "port-2"],
     ]);
   });
 

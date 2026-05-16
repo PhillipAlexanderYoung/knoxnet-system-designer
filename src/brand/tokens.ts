@@ -47,6 +47,7 @@ export const categoryColor: Record<string, string> = {
   broadcast: "#5CC9FF", // bright cyan — broadcast/control room
   site: colors.signalTeal,
   cable: colors.ink200,
+  conduit: colors.ink400,
   annotation: colors.ink300,
 };
 
@@ -63,5 +64,6 @@ export const categoryLabel: Record<string, string> = {
   broadcast: "Broadcast",
   site: "Site & Fiber",
   cable: "Cable",
+  conduit: "Conduit",
   annotation: "Annotation",
 };

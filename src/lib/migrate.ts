@@ -11,11 +11,12 @@
  *     filled with sensible defaults.
  *   - Each migrator covers a single version bump. `migrateProject`
  *     chains them in order; we never skip versions.
- *   - Sheet sources are the only thing that materially changed shape
- *     in v2.0, so the migrator focuses there.
+ *   - After versioned migrations run, projects flow through the shared
+ *     normalizer so newer optional fields get safe defaults on every
+ *     load path (.knoxnet and IndexedDB).
  */
 
-import type { Project, Sheet } from "../store/projectStore";
+import { normalizeProject, type Project, type Sheet } from "../store/projectStore";
 import type { SheetSource } from "./sheetSource";
 
 /** Latest file/format version emitted by this build. Bumped any time a
@@ -44,7 +45,7 @@ export function migrateSheetV1toV2(sheet: Sheet): Sheet {
 export function migrateProjectV1toV2(project: Project): Project {
   return {
     ...project,
-    sheets: project.sheets.map(migrateSheetV1toV2),
+    sheets: (project.sheets ?? []).map(migrateSheetV1toV2),
   };
 }
 
@@ -56,5 +57,5 @@ export function migrateProjectV1toV2(project: Project): Project {
 export function migrateProject(project: Project, _fromVersion?: string): Project {
   // Right now there's exactly one migrator. Future versions will chain
   // additional migrators here based on `_fromVersion`.
-  return migrateProjectV1toV2(project);
+  return normalizeProject(migrateProjectV1toV2(project));
 }

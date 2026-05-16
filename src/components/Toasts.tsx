@@ -8,18 +8,20 @@ export function Toasts() {
 
   useEffect(() => {
     if (toasts.length === 0) return;
-    const timers = toasts.map((t) =>
-      setTimeout(() => dismiss(t.id), t.kind === "error" ? 6000 : 3500),
-    );
+    const now = Date.now();
+    const timers = toasts.map((t) => {
+      const remaining = Math.max(0, t.createdAt + t.durationMs - now);
+      return setTimeout(() => dismiss(t.id), remaining);
+    });
     return () => timers.forEach((t) => clearTimeout(t));
   }, [toasts, dismiss]);
 
   return (
-    <div className="fixed bottom-12 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+    <div className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 flex-col-reverse gap-2 pointer-events-none">
       {toasts.map((t) => (
         <div
           key={t.id}
-          className="panel rounded-lg pl-3 pr-2 py-2 flex items-center gap-2 max-w-sm pointer-events-auto animate-slide-up"
+          className="panel rounded-lg pl-3 pr-2 py-2 flex items-center gap-2 max-w-[28rem] pointer-events-none animate-slide-up shadow-lg"
         >
           {t.kind === "success" && (
             <CheckCircle2 className="w-4 h-4 text-signal-green shrink-0" />
@@ -30,10 +32,15 @@ export function Toasts() {
           {t.kind === "info" && (
             <Info className="w-4 h-4 text-signal-blue shrink-0" />
           )}
-          <div className="text-sm text-ink-100">{t.message}</div>
+          <div className="text-sm text-ink-100">
+            {t.message}
+            {t.count > 1 && (
+              <span className="ml-2 text-[11px] text-ink-500 font-mono">x{t.count}</span>
+            )}
+          </div>
           <button
             onClick={() => dismiss(t.id)}
-            className="text-ink-400 hover:text-ink-50 ml-1"
+            className="text-ink-400 hover:text-ink-50 ml-1 pointer-events-auto"
           >
             <X className="w-3.5 h-3.5" />
           </button>

@@ -1,11 +1,14 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import {
+  partitionValidationHighlightOverlay,
   sortDeviceTagsForRender,
   sortMarkupsForRender,
 } from "../src/lib/markupOrdering";
 import {
   DEFAULT_LAYERS,
+  effectiveMarkupLayerId,
+  isMarkupLayerVisible,
   normalizeLayers,
   useProjectStore,
   type CableMarkup,
@@ -45,6 +48,47 @@ describe("markup render ordering", () => {
     expect(ordered.map((m) => m.id)).toEqual(["run", "pull-box", "camera"]);
   });
 
+  it("keeps conduit runs on their own effective layer", () => {
+    const conduit = cable({ id: "conduit-run", cableId: "conduit", layer: "cable" });
+    const copper = cable({ id: "copper-run", cableId: "cat6", layer: "conduit" });
+
+    expect(effectiveMarkupLayerId(conduit)).toBe("conduit");
+    expect(effectiveMarkupLayerId(copper)).toBe("cable");
+  });
+
+  it("draws conduit below cable and fiber runs by default", () => {
+    const ordered = sortMarkupsForRender([
+      device({ id: "camera", layer: "cameras" }),
+      cable({ id: "copper-run", cableId: "cat6" }),
+      cable({ id: "conduit-run", cableId: "conduit", layer: "cable" }),
+      cable({ id: "fiber-run", cableId: "fiber-sm" }),
+    ]);
+
+    expect(ordered.map((m) => m.id)).toEqual([
+      "conduit-run",
+      "copper-run",
+      "fiber-run",
+      "camera",
+    ]);
+  });
+
+  it("applies cable and conduit layer visibility independently", () => {
+    const layers: Layer[] = normalizeLayers(DEFAULT_LAYERS).map((layer) =>
+      layer.id === "cable" ? { ...layer, visible: false } : layer,
+    );
+    const copper = cable({ id: "copper-run", cableId: "cat6" });
+    const conduit = cable({ id: "conduit-run", cableId: "conduit", layer: "cable" });
+
+    expect(isMarkupLayerVisible(copper, layers)).toBe(false);
+    expect(isMarkupLayerVisible(conduit, layers)).toBe(true);
+
+    const conduitHidden = layers.map((layer) =>
+      layer.id === "conduit" ? { ...layer, visible: false } : layer,
+    );
+    expect(isMarkupLayerVisible(copper, conduitHidden)).toBe(false);
+    expect(isMarkupLayerVisible(conduit, conduitHidden)).toBe(false);
+  });
+
   it("lets custom layer order move cable runs above device layers", () => {
     const layers: Layer[] = normalizeLayers(DEFAULT_LAYERS);
     const cableIndex = layers.findIndex((l) => l.id === "cable");
@@ -78,6 +122,22 @@ describe("markup render ordering", () => {
     expect(ordered.map((m) => m.id)).toEqual(["switch", "camera"]);
   });
 
+  it("lifts validation-highlighted cable runs into a transient overlay", () => {
+    const ordered = sortMarkupsForRender([
+      device({ id: "switch", layer: "network" }),
+      cable({ id: "dead-run" }),
+      cable({ id: "normal-run" }),
+    ]);
+
+    const partitioned = partitionValidationHighlightOverlay(
+      ordered,
+      new Set(["dead-run"]),
+    );
+
+    expect(partitioned.baseMarkups.map((m) => m.id)).toEqual(["normal-run", "switch"]);
+    expect(partitioned.overlayMarkups.map((m) => m.id)).toEqual(["dead-run"]);
+  });
+
   it("keeps tag overlay order aligned with explicit layer reordering", () => {
     const layers: Layer[] = normalizeLayers(DEFAULT_LAYERS);
     const cameraIndex = layers.findIndex((l) => l.id === "cameras");
@@ -101,6 +161,36 @@ describe("markup render ordering", () => {
     expect(state.project?.layers?.map((l) => l.id)).toEqual(
       state.layers.map((l) => l.id),
     );
+  });
+
+  it("restores hidden runs when their run layer is shown", () => {
+    const store = useProjectStore.getState();
+    store.newProject({ projectName: "Hidden Run Restore Test" });
+    store.addSheet({
+      id: "sheet-1",
+      name: "Sheet 1",
+      fileName: "sheet.pdf",
+      pageWidth: 100,
+      pageHeight: 100,
+      renderScale: 1,
+      markups: [
+        cable({ id: "hidden-cable", cableId: "cat6", hidden: true }),
+        cable({ id: "hidden-conduit", cableId: "conduit", layer: "cable", hidden: true }),
+      ],
+    });
+
+    store.toggleLayer("cable");
+    store.toggleLayer("cable");
+
+    const afterCableShow = useProjectStore.getState().project!.sheets[0].markups;
+    expect(afterCableShow.find((m) => m.id === "hidden-cable")?.hidden).toBe(false);
+    expect(afterCableShow.find((m) => m.id === "hidden-conduit")?.hidden).toBe(true);
+
+    useProjectStore.getState().toggleLayer("conduit");
+    useProjectStore.getState().toggleLayer("conduit");
+
+    const afterConduitShow = useProjectStore.getState().project!.sheets[0].markups;
+    expect(afterConduitShow.find((m) => m.id === "hidden-conduit")?.hidden).toBe(false);
   });
 
   it("defaults cable run labels off until the user enables them", () => {

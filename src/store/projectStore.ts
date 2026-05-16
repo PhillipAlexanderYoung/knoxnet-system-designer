@@ -63,6 +63,12 @@ import {
   isSwitchLikeDevice,
   withDefaultNetworkConfig,
 } from "../lib/networkConfig";
+import {
+  resolveValidationIssue,
+  resolveValidationIssues,
+  type ValidationResolveResult,
+} from "../lib/validation";
+import { enqueueToast, type Toast, type ToastKind } from "../lib/toasts";
 
 // ───────── Types ─────────
 
@@ -225,6 +231,7 @@ export type LayerId =
   | "broadcast"
   | "site"
   | "cable"
+  | "conduit"
   | "annotation";
 
 export interface Layer {
@@ -852,6 +859,22 @@ export type Markup =
  *  below so consumers can iterate every kind without enumerating them. */
 export type MarkupKind = Markup["kind"];
 
+export function isConduitRunMarkup(markup: Markup): markup is CableMarkup {
+  return markup.kind === "cable" && markup.cableId === "conduit";
+}
+
+export function effectiveMarkupLayerId(markup: Markup): LayerId {
+  if (markup.kind === "cable" && (markup.layer === "cable" || markup.layer === "conduit")) {
+    return isConduitRunMarkup(markup) ? "conduit" : "cable";
+  }
+  return markup.layer;
+}
+
+export function isMarkupLayerVisible(markup: Markup, layers: Layer[] | undefined): boolean {
+  const layerId = effectiveMarkupLayerId(markup);
+  return normalizeLayers(layers).find((layer) => layer.id === layerId)?.visible !== false;
+}
+
 /** Per-markup-kind toggle for what shows up in exports. Independent of
  *  the editor's layer visibility (which already controls what renders on
  *  the canvas), so the user can hide all freehand drawings from the
@@ -1112,6 +1135,7 @@ export const DEFAULT_LAYERS: Layer[] = [
   { id: "broadcast", label: "Broadcast", visible: true, locked: false },
   { id: "site", label: "Site & Fiber", visible: true, locked: false },
   { id: "cable", label: "Cable Runs", visible: true, locked: false },
+  { id: "conduit", label: "Conduit Runs", visible: true, locked: false },
   { id: "annotation", label: "Annotation", visible: true, locked: false },
 ];
 
@@ -1157,6 +1181,8 @@ export interface LockMoveHintState {
   message: string;
   shownAt: number;
   pulseKey: number;
+  scope?: "global" | "selection";
+  targetIds?: string[];
 }
 
 interface State {
@@ -1175,6 +1201,8 @@ interface State {
   selectedMarkupIds: string[];
   hintedMarkupId: string | null;
   hintedMarkupIds: string[];
+  validationHighlightMarkupIds: string[];
+  validationIssueMode: boolean;
   /** Which branding element (if any) is currently selected for drag/resize
    *  on the canvas. Mutually exclusive with `selectedMarkupIds` — selecting
    *  a markup clears this and vice versa. */
@@ -1227,8 +1255,8 @@ interface State {
   settingsOpen: boolean;
   commandPaletteOpen: boolean;
   /** Toast notifications */
-  toasts: { id: string; kind: "info" | "success" | "error"; message: string }[];
-  /** Transient nudge shown when a locked device blocks movement. */
+  toasts: Toast[];
+  /** Transient nudge shown when a locked item blocks movement. */
   lockMoveHint: LockMoveHintState | null;
 
   // actions
@@ -1357,6 +1385,9 @@ interface State {
   setSelected: (ids: string[]) => void;
   setHintedMarkup: (id: string | null) => void;
   setHintedMarkups: (ids: string[]) => void;
+  setValidationHighlights: (ids: string[]) => void;
+  clearValidationHighlights: () => void;
+  setValidationIssueMode: (enabled: boolean) => void;
 
   toggleLayer: (id: LayerId) => void;
   setLayerLocked: (id: LayerId, locked: boolean) => void;
@@ -1373,6 +1404,8 @@ interface State {
   removeConnectionAndCable: (id: string) => void;
   disconnectConnectionFromSwitch: (id: string, switchTag: string) => void;
   autoAssignContainerInternalConnections: (containerId: string) => number;
+  autoResolveValidationIssue: (issueId: string, optionId?: string) => ValidationResolveResult;
+  autoResolveValidationIssues: (issueIds: string[]) => ValidationResolveResult;
 
   /** Custom report templates */
   addReport: (template: ReportTemplate) => void;
@@ -1415,8 +1448,11 @@ interface State {
   toggleSettings: () => void;
   toggleCommandPalette: () => void;
 
-  pushToast: (kind: "info" | "success" | "error", message: string) => void;
+  pushToast: (kind: ToastKind, message: string) => void;
   dismissToast: (id: string) => void;
+  notifyLockedMoveAttempt: (
+    hint?: Partial<Pick<LockMoveHintState, "message" | "scope" | "targetIds">>,
+  ) => void;
   notifyLockedDeviceMoveAttempt: () => void;
   clearLockMoveHint: (pulseKey?: number) => void;
 
@@ -1433,9 +1469,12 @@ const emptyHistory = (): HistoryState => ({
   transactionBase: null,
 });
 
-function normalizeProject(p: Project): Project {
+export function normalizeProject(p: Project): Project {
+  const createdAt = Number(p.createdAt);
+  const updatedAt = Number(p.updatedAt);
   return projectWithGeneratedCableLabels({
     ...p,
+    id: p.id || uid(),
     meta: {
       projectName: p.meta?.projectName ?? "Untitled Project",
       projectNumber: p.meta?.projectNumber ?? "",
@@ -1449,13 +1488,18 @@ function normalizeProject(p: Project): Project {
     sheets: (p.sheets ?? []).map(normalizeSheet),
     racks: p.racks ?? [],
     bidDefaults: { ...defaultBidDefaults, ...(p.bidDefaults ?? {}) },
-    reports: p.reports && p.reports.length > 0 ? p.reports : buildStarterTemplates(),
+    reports: p.reports ?? buildStarterTemplates(),
     diagrams: p.diagrams ?? [],
     connections: p.connections && p.connections.length > 0 ? p.connections : undefined,
     layers: normalizeLayers(p.layers),
-    bidExportVisibility: p.bidExportVisibility ?? defaultBidExportVisibility,
+    bidExportVisibility: {
+      ...defaultBidExportVisibility,
+      ...(p.bidExportVisibility ?? {}),
+    },
     bidLaborOverrides: normalizeBidLineLaborOverrides(p.bidLaborOverrides),
     runLabelsVisible: p.runLabelsVisible === true,
+    createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
+    updatedAt: Number.isFinite(updatedAt) ? updatedAt : Date.now(),
   });
 }
 
@@ -1556,6 +1600,8 @@ export const useProjectStore = create<State>()(
     selectedMarkupIds: [],
     hintedMarkupId: null,
     hintedMarkupIds: [],
+    validationHighlightMarkupIds: [],
+    validationIssueMode: false,
     selectedBrand: null,
     layers: DEFAULT_LAYERS.map((l) => ({ ...l })),
     cursor: null,
@@ -1594,6 +1640,8 @@ export const useProjectStore = create<State>()(
         layers: normalizeLayers(project.layers),
         runLabelsVisible: project.runLabelsVisible === true,
         selectedMarkupIds: [],
+        validationHighlightMarkupIds: [],
+        validationIssueMode: false,
         cableRunDraft: null,
         cableRunBulkBranch: null,
         lockMoveHint: null,
@@ -1620,6 +1668,8 @@ export const useProjectStore = create<State>()(
         layers: normalizeLayers(project.layers),
         runLabelsVisible: project.runLabelsVisible === true,
         selectedMarkupIds: [],
+        validationHighlightMarkupIds: [],
+        validationIssueMode: false,
         cableRunDraft: null,
         cableRunBulkBranch: null,
         lockMoveHint: null,
@@ -1645,6 +1695,8 @@ export const useProjectStore = create<State>()(
           cableRunBulkBranch: null,
           lockMoveHint: null,
           selectedMarkupIds: [],
+          validationHighlightMarkupIds: [],
+          validationIssueMode: false,
         };
       }),
 
@@ -1666,6 +1718,8 @@ export const useProjectStore = create<State>()(
           cableRunBulkBranch: null,
           lockMoveHint: null,
           selectedMarkupIds: [],
+          validationHighlightMarkupIds: [],
+          validationIssueMode: false,
         };
       }),
 
@@ -2782,9 +2836,11 @@ export const useProjectStore = create<State>()(
             s.lockMoveHint && now - s.lockMoveHint.shownAt < 1400
               ? s.lockMoveHint
               : {
-                  message: "Devices are locked. Unlock to move.",
+                  message: "Locked. Unlock to move.",
                   shownAt: now,
                   pulseKey: now,
+                  scope: "selection" as const,
+                  targetIds: [device.id],
                 };
           return { ...s, lockMoveHint };
         }
@@ -3030,17 +3086,40 @@ export const useProjectStore = create<State>()(
     setHintedMarkup: (id) => set({ hintedMarkupId: id, hintedMarkupIds: id ? [id] : [] }),
     setHintedMarkups: (ids) =>
       set({ hintedMarkupId: ids[0] ?? null, hintedMarkupIds: Array.from(new Set(ids)) }),
+    setValidationHighlights: (ids) =>
+      set({ validationHighlightMarkupIds: Array.from(new Set(ids)) }),
+    clearValidationHighlights: () =>
+      set({ validationHighlightMarkupIds: [], validationIssueMode: false }),
+    setValidationIssueMode: (enabled) => set({ validationIssueMode: enabled }),
 
     toggleLayer: (id) =>
       set((s) => {
+        const nextVisible = !(s.layers.find((l) => l.id === id)?.visible ?? true);
         const layers = s.layers.map((l) =>
           l.id === id ? { ...l, visible: !l.visible } : l,
         );
+        const shouldRestoreHiddenRuns =
+          nextVisible && (id === "cable" || id === "conduit");
+        const project = s.project
+          ? {
+              ...s.project,
+              layers,
+              sheets: shouldRestoreHiddenRuns
+                ? s.project.sheets.map((sheet) => ({
+                    ...sheet,
+                    markups: sheet.markups.map((markup) =>
+                      markup.hidden && effectiveMarkupLayerId(markup) === id
+                        ? ({ ...markup, hidden: false } as Markup)
+                        : markup,
+                    ),
+                  }))
+                : s.project.sheets,
+              updatedAt: Date.now(),
+            }
+          : s.project;
         return {
           layers,
-          project: s.project
-            ? { ...s.project, layers, updatedAt: Date.now() }
-            : s.project,
+          project,
         };
       }),
 
@@ -3221,6 +3300,56 @@ export const useProjectStore = create<State>()(
         };
       });
       return assigned;
+    },
+
+    autoResolveValidationIssue: (issueId, optionId) => {
+      let result: ValidationResolveResult = {
+        project: get().project!,
+        resolved: false,
+        message: "No project is loaded.",
+        affectedMarkupIds: [],
+      };
+      set((s) => {
+        if (!s.project) return s;
+        result = resolveValidationIssue(s.project, issueId, optionId);
+        if (!result.resolved || result.project === s.project) {
+          return {
+            validationHighlightMarkupIds: result.affectedMarkupIds,
+          };
+        }
+        return {
+          history: historyAfterProjectChange(s.history, s.project),
+          project: result.project,
+          validationHighlightMarkupIds: result.affectedMarkupIds,
+          validationIssueMode: false,
+        };
+      });
+      return result;
+    },
+
+    autoResolveValidationIssues: (issueIds) => {
+      let result: ValidationResolveResult = {
+        project: get().project!,
+        resolved: false,
+        message: "No project is loaded.",
+        affectedMarkupIds: [],
+      };
+      set((s) => {
+        if (!s.project) return s;
+        result = resolveValidationIssues(s.project, issueIds);
+        if (!result.resolved || result.project === s.project) {
+          return {
+            validationHighlightMarkupIds: result.affectedMarkupIds,
+          };
+        }
+        return {
+          history: historyAfterProjectChange(s.history, s.project),
+          project: result.project,
+          validationHighlightMarkupIds: result.affectedMarkupIds,
+          validationIssueMode: false,
+        };
+      });
+      return result;
     },
 
     addReport: (template) =>
@@ -3492,21 +3621,28 @@ export const useProjectStore = create<State>()(
 
     pushToast: (kind, message) =>
       set((s) => ({
-        toasts: [...s.toasts, { id: uid(), kind, message }],
+        toasts: enqueueToast(s.toasts, kind, message, Date.now(), uid),
       })),
     dismissToast: (id) =>
       set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
-    notifyLockedDeviceMoveAttempt: () =>
+    notifyLockedMoveAttempt: (hint) =>
       set((s) => {
         const now = Date.now();
         if (s.lockMoveHint && now - s.lockMoveHint.shownAt < 1400) return s;
         return {
           lockMoveHint: {
-            message: "Devices are locked. Unlock to move.",
+            message: hint?.message ?? "Locked. Unlock to move.",
             shownAt: now,
             pulseKey: now,
+            scope: hint?.scope,
+            targetIds: hint?.targetIds,
           },
         };
+      }),
+    notifyLockedDeviceMoveAttempt: () =>
+      get().notifyLockedMoveAttempt({
+        message: "Locked. Unlock to move.",
+        scope: "global",
       }),
     clearLockMoveHint: (pulseKey) =>
       set((s) => {
@@ -4148,6 +4284,8 @@ type HotStateSnapshot = Pick<
   | "selectedMarkupIds"
   | "hintedMarkupId"
   | "hintedMarkupIds"
+  | "validationHighlightMarkupIds"
+  | "validationIssueMode"
   | "selectedBrand"
   | "layers"
   | "cursor"
@@ -4190,6 +4328,8 @@ function hotSnapshot(s: State): HotStateSnapshot {
     selectedMarkupIds: s.selectedMarkupIds,
     hintedMarkupId: s.hintedMarkupId,
     hintedMarkupIds: s.hintedMarkupIds,
+    validationHighlightMarkupIds: s.validationHighlightMarkupIds,
+    validationIssueMode: s.validationIssueMode,
     selectedBrand: s.selectedBrand,
     layers: s.layers,
     cursor: s.cursor,
@@ -4234,6 +4374,8 @@ if (viteHot) {
       history: hotData.state.history ?? emptyHistory(),
       layers: normalizeLayers(hotData.state.layers),
       runLabelsVisible: hotData.state.project?.runLabelsVisible === true,
+      validationHighlightMarkupIds: hotData.state.validationHighlightMarkupIds ?? [],
+      validationIssueMode: hotData.state.validationIssueMode ?? false,
       cableRunBulkBranch: null,
     });
   }

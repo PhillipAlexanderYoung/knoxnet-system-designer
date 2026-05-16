@@ -299,7 +299,9 @@ describe("nesting store behavior", () => {
       .project!.sheets[0].markups.find((m) => m.id === "sw1") as DeviceMarkup;
     expect(moved).toMatchObject({ x: 118, y: 100, parentId: "he1" });
     expect(useProjectStore.getState().lockMoveHint).toMatchObject({
-      message: "Devices are locked. Unlock to move.",
+      message: "Locked. Unlock to move.",
+      scope: "selection",
+      targetIds: ["sw1"],
     });
   });
 

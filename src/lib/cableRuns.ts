@@ -9,6 +9,7 @@ import type {
 import type { Calibration } from "../store/projectStore";
 import { polylineLengthPts, ptsToFeet } from "./geometry";
 import { nestedBubblePoint } from "./nesting";
+import { effectiveDevicePorts } from "../data/devices";
 
 export const ROUTE_INFRA_DEVICE_IDS = new Set([
   "site-handhole",
@@ -46,6 +47,35 @@ export function isCableAddressableMarkup(markup: Markup): markup is DeviceMarkup
   return (markup as DeviceMarkup & { cableConnectable?: boolean }).cableConnectable !== false;
 }
 
+function hasExplicitActivePorts(markup: DeviceMarkup): boolean {
+  return (
+    !!markup.systemConfig?.switchConfig ||
+    (markup.instancePorts?.length ?? 0) > 0 ||
+    (effectiveDevicePorts(markup.deviceId, markup.instancePorts)?.length ?? 0) > 0
+  );
+}
+
+export function isRouteInfrastructureDevice(markup: DeviceMarkup): boolean {
+  return ROUTE_INFRA_DEVICE_IDS.has(markup.deviceId) && !hasExplicitActivePorts(markup);
+}
+
+export type CableRunAddressableEndpoint = Pick<
+  CableRunEndpoint,
+  "deviceTag" | "deviceMarkupId" | "deviceId" | "routeWaypoint"
+>;
+
+export function isTerminalCableRunEndpoint(
+  endpoint: CableRunAddressableEndpoint | null | undefined,
+): endpoint is CableRunAddressableEndpoint & { deviceTag: string } {
+  return !!endpoint?.deviceTag?.trim() && endpoint.routeWaypoint !== true;
+}
+
+export function terminalCableRunEndpoints<T extends CableRunAddressableEndpoint | null | undefined>(
+  route: T[],
+): Array<T & { deviceTag: string }> {
+  return route.filter(isTerminalCableRunEndpoint) as Array<T & { deviceTag: string }>;
+}
+
 export function endpointFromMarkup(
   markup: Markup,
   options: { asRouteWaypoint?: boolean; markups?: Markup[] } = {},
@@ -62,7 +92,7 @@ export function endpointFromMarkup(
     ? `${tag} · ${markup.labelOverride.trim()}`
     : tag;
   const routeWaypoint =
-    options.asRouteWaypoint === true || ROUTE_INFRA_DEVICE_IDS.has(markup.deviceId);
+    options.asRouteWaypoint === true || isRouteInfrastructureDevice(markup);
   return {
     x: anchor.x,
     y: anchor.y,
@@ -78,7 +108,7 @@ export function endpointFromMarkup(
 export function isRouteInfrastructureMarkup(
   markup: Markup,
 ): markup is DeviceMarkup {
-  return markup.kind === "device" && ROUTE_INFRA_DEVICE_IDS.has(markup.deviceId);
+  return markup.kind === "device" && isRouteInfrastructureDevice(markup);
 }
 
 export function routeInfrastructureLabel(markup: DeviceMarkup) {
@@ -191,7 +221,7 @@ export function buildCableRunMarkup(
   return {
     id,
     kind: "cable",
-    layer: "cable",
+    layer: cableId === "conduit" ? "conduit" : "cable",
     cableId,
     ...options,
     runCount: 1,
@@ -605,10 +635,10 @@ export function buildCableRunConnection(
   cableId: string,
   route: CableRunEndpoint[],
 ): DeviceConnection | null {
-  const start = route[0];
-  const end = route[route.length - 1];
+  const terminals = terminalCableRunEndpoints(route);
+  const start = terminals[0];
+  const end = terminals[terminals.length - 1];
   if (!start || !end) return null;
-  if (start.routeWaypoint || end.routeWaypoint) return null;
   if (!start.deviceTag || !end.deviceTag || start.deviceTag === end.deviceTag) {
     return null;
   }

@@ -1,4 +1,5 @@
 import { PDFDocument, PDFImage, PDFPage, PDFFont, rgb, degrees } from "pdf-lib";
+import { isMarkupLayerVisible } from "../store/projectStore";
 import type {
   Project,
   Sheet,
@@ -681,6 +682,7 @@ function drawMarkupsOnPage(
     exportVisibility,
     fonts,
     projectTagFontDefault,
+    layers,
   );
   const runLabelLayouts = runLabelLayoutsFor(sheet.markups, { showRunLabels });
 
@@ -691,6 +693,7 @@ function drawMarkupsOnPage(
       if (m.hidden) continue;
       if (m.kind !== "device") continue;
       if (!isKindVisible(m)) continue;
+      if (!isMarkupLayerVisible(m, layers)) continue;
       try {
         const parent = m.parentId
           ? sheet.markups.find(
@@ -716,6 +719,7 @@ function drawMarkupsOnPage(
     if (m.hidden) continue;
     if (m.kind === "schedule") continue;
     if (!isKindVisible(m)) continue;
+    if (!isMarkupLayerVisible(m, layers)) continue;
     try {
       drawSingleMarkup(
         page,
@@ -741,6 +745,7 @@ function drawMarkupsOnPage(
   for (const m of sortDeviceTagsForRender(sheet.markups, layers)) {
     if (m.hidden) continue;
     if (!isKindVisible(m)) continue;
+    if (!isMarkupLayerVisible(m, layers)) continue;
     try {
       drawSingleMarkup(
         page,
@@ -764,6 +769,7 @@ function drawMarkupsOnPage(
   for (const m of orderedMarkups) {
     if (m.hidden || m.kind !== "schedule" || m.visible === false) continue;
     if (!isKindVisible(m)) continue;
+    if (!isMarkupLayerVisible(m, layers)) continue;
     try {
       drawSingleMarkup(
         page,
@@ -825,10 +831,11 @@ function layoutDeviceTags(
   exportVisibility: ExportVisibility | undefined,
   fonts: BrandFonts,
   projectTagFontDefault: number | undefined,
+  layers: Layer[] | undefined,
 ): Map<string, TagLayout> {
   const layouts = new Map<string, TagLayout>();
   const isVisible = (m: Markup) =>
-    !m.hidden && exportVisibility?.[m.kind] !== false;
+    !m.hidden && exportVisibility?.[m.kind] !== false && isMarkupLayerVisible(m, layers);
 
   type Disc = { id: string; x: number; y: number; r: number };
   const discs: Disc[] = [];

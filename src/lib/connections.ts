@@ -12,6 +12,7 @@ import type {
   Project,
 } from "../store/projectStore";
 import { effectiveDevicePorts } from "../data/devices";
+import { isRouteInfrastructureDevice } from "./cableRuns";
 
 /** Find the device markup with the given tag anywhere in the project.
  *  Linear scan — connections are typically dozens, not thousands, so
@@ -191,7 +192,8 @@ export function buildSwitchPortAssignmentPatches(
   }
 
   for (const target of needsAssignment) {
-    const port = ports.find(
+    const orderedPorts = target.portId ? portsAfterCurrentFirst(ports, target.portId) : ports;
+    const port = orderedPorts.find(
       (candidate) =>
         isPortCompatibleWithConnection(candidate, target.connection) &&
         !used.has(candidate.id),
@@ -205,6 +207,12 @@ export function buildSwitchPortAssignmentPatches(
   }
 
   return { patches, exhausted };
+}
+
+function portsAfterCurrentFirst(ports: PortSpec[], currentPortId: string): PortSpec[] {
+  const index = ports.findIndex((port) => port.id === currentPortId);
+  if (index < 0) return ports;
+  return [...ports.slice(index + 1), ...ports.slice(0, index)];
 }
 
 type SwitchPortTarget =
@@ -225,6 +233,7 @@ function switchPortTargets(project: Project, switchDevice: DeviceMarkup): Switch
   const targets: SwitchPortTarget[] = [];
   for (const connection of project.connections ?? []) {
     if (connection.fromTag === switchDevice.tag) {
+      if (!isSwitchPortPeerTarget(project, connection.toTag)) continue;
       targets.push({
         connection,
         kind: "from",
@@ -234,6 +243,7 @@ function switchPortTargets(project: Project, switchDevice: DeviceMarkup): Switch
       continue;
     }
     if (connection.toTag === switchDevice.tag) {
+      if (!isSwitchPortPeerTarget(project, connection.fromTag)) continue;
       targets.push({
         connection,
         kind: "to",
@@ -245,6 +255,7 @@ function switchPortTargets(project: Project, switchDevice: DeviceMarkup): Switch
     const endpoint = connection.internalEndpoint;
     if (endpoint?.deviceId === switchDevice.id || endpoint?.deviceTag === switchDevice.tag) {
       const otherTag = connection.fromTag === endpoint.containerTag ? connection.toTag : connection.fromTag;
+      if (!isSwitchPortPeerTarget(project, otherTag)) continue;
       targets.push({
         connection,
         kind: "internal",
@@ -254,6 +265,11 @@ function switchPortTargets(project: Project, switchDevice: DeviceMarkup): Switch
     }
   }
   return targets;
+}
+
+function isSwitchPortPeerTarget(project: Project, deviceTag: string | undefined): boolean {
+  const device = deviceTag ? findDeviceByTag(project, deviceTag) : undefined;
+  return !device || !isRouteInfrastructureDevice(device);
 }
 
 function patchSwitchPortTarget(
@@ -287,6 +303,7 @@ function withAutoAssignedEndpointPort(
   if (conn[labelKey]?.trim()) return conn;
   const device = findDeviceByTag(project, tag);
   if (!device) return conn;
+  if (isRouteInfrastructureDevice(device)) return conn;
   const port = nextAvailableDevicePort(project, conn, device);
   return port ? { ...conn, [idKey]: port.id, [labelKey]: port.label } : conn;
 }
@@ -314,6 +331,7 @@ function withResolvedInternalEndpoint(
     findDeviceById(project, endpoint.deviceId) ??
     findDeviceByTag(project, endpoint.deviceTag);
   if (!device) return conn;
+  if (isRouteInfrastructureDevice(device)) return conn;
   const ports = effectiveDevicePorts(device.deviceId, device.instancePorts);
   const explicitPort = endpoint.portId ? findPort(ports, endpoint.portId) : undefined;
   const port =

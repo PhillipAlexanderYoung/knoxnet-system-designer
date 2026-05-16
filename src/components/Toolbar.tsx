@@ -131,6 +131,7 @@ export function Toolbar() {
   ) ?? { total: 0, locked: 0 };
   const allDevicesLocked =
     deviceLockStats.total > 0 && deviceLockStats.locked === deviceLockStats.total;
+  const showGlobalLockHint = !!lockMoveHint && lockMoveHint.scope !== "selection";
 
   useEffect(() => {
     setFiberStrandInput(String(activeFiberStrandCount));
@@ -253,46 +254,48 @@ export function Toolbar() {
           Run labels
         </span>
       </button>
-      <button
-        onClick={() => {
-          const nextLocked = !allDevicesLocked;
-          const n = setAllDeviceMarkupsLocked(nextLocked);
-          pushToast(
-            n === 0 ? "info" : "success",
-            n === 0
-              ? "No placed devices to update"
-              : `${nextLocked ? "Locked" : "Unlocked"} ${n} device${n === 1 ? "" : "s"}`,
-          );
-        }}
-        data-active={allDevicesLocked}
-        className={`tool-btn group ${
-          lockMoveHint
-            ? "bg-amber-knox/20 text-amber-knox ring-1 ring-amber-knox/60 shadow-glow animate-pulse"
-            : ""
-        }`}
-        title={
-          allDevicesLocked
-            ? "Unlock all devices"
-            : "Lock all devices (cable routes stay editable)"
-        }
-      >
-        {allDevicesLocked ? (
-          <Lock className="w-4 h-4" />
-        ) : (
-          <LockOpen className="w-4 h-4" />
-        )}
-        <span className="absolute -bottom-7 left-1/2 -translate-x-1/2 text-[10px] font-mono uppercase tracking-wider text-ink-300 opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap bg-ink-900 px-1.5 py-0.5 rounded">
-          {allDevicesLocked ? "Unlock devices" : "Lock devices"}
-        </span>
-      </button>
-      {lockMoveHint && (
-        <div
-          key={lockMoveHint.pulseKey}
-          className="absolute top-full left-1/2 mt-2 -translate-x-1/2 rounded-md border border-amber-knox/30 bg-ink-900/95 px-2.5 py-1.5 text-[11px] font-mono text-amber-knox shadow-glass pointer-events-none animate-fade-in whitespace-nowrap"
+      <div className="relative">
+        <button
+          onClick={() => {
+            const nextLocked = !allDevicesLocked;
+            const n = setAllDeviceMarkupsLocked(nextLocked);
+            pushToast(
+              n === 0 ? "info" : "success",
+              n === 0
+                ? "No placed devices to update"
+                : `${nextLocked ? "Locked" : "Unlocked"} ${n} device${n === 1 ? "" : "s"}`,
+            );
+          }}
+          data-active={allDevicesLocked}
+          className={`tool-btn group ${
+            showGlobalLockHint
+              ? "bg-signal-red/20 text-signal-red ring-1 ring-signal-red/70 shadow-[0_0_14px_rgba(255,92,122,0.45)] animate-pulse"
+              : ""
+          }`}
+          title={
+            allDevicesLocked
+              ? "Unlock all devices"
+              : "Lock all devices (cable routes stay editable)"
+          }
         >
-          {lockMoveHint.message}
-        </div>
-      )}
+          {allDevicesLocked ? (
+            <Lock className="w-4 h-4" />
+          ) : (
+            <LockOpen className="w-4 h-4" />
+          )}
+          <span className="absolute -bottom-7 left-1/2 -translate-x-1/2 text-[10px] font-mono uppercase tracking-wider text-ink-300 opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap bg-ink-900 px-1.5 py-0.5 rounded">
+            {allDevicesLocked ? "Unlock devices" : "Lock devices"}
+          </span>
+        </button>
+        {showGlobalLockHint && (
+          <div
+            key={lockMoveHint!.pulseKey}
+            className="absolute top-full left-1/2 mt-1.5 -translate-x-1/2 rounded-md border border-signal-red/40 bg-ink-900/95 px-2 py-1 text-[10px] font-mono text-signal-red shadow-glass pointer-events-none animate-fade-in whitespace-nowrap"
+          >
+            {lockMoveHint!.message}
+          </div>
+        )}
+      </div>
       <TagDefaultsButton />
 
       {activeTool === "cable" && (

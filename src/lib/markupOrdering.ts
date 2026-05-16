@@ -1,5 +1,6 @@
 import {
   DEFAULT_LAYERS,
+  effectiveMarkupLayerId,
   normalizeLayers,
   type Layer,
   type Markup,
@@ -20,8 +21,8 @@ export function sortMarkupsForRender(
   return markups
     .map((markup, insertionIndex) => ({ markup, insertionIndex }))
     .sort((a, b) => {
-      const aLayer = topIndex.get(a.markup.layer) ?? fallbackIndex;
-      const bLayer = topIndex.get(b.markup.layer) ?? fallbackIndex;
+      const aLayer = topIndex.get(effectiveMarkupLayerId(a.markup)) ?? fallbackIndex;
+      const bLayer = topIndex.get(effectiveMarkupLayerId(b.markup)) ?? fallbackIndex;
       if (aLayer !== bLayer) return bLayer - aLayer;
 
       const aKind = kindPriority(a.markup);
@@ -41,6 +42,24 @@ export function sortDeviceTagsForRender(
     (markup): markup is Extract<Markup, { kind: "device" }> =>
       markup.kind === "device",
   );
+}
+
+export function partitionValidationHighlightOverlay(
+  markups: Markup[],
+  highlightedIds: Set<string>,
+): { baseMarkups: Markup[]; overlayMarkups: Extract<Markup, { kind: "cable" }>[] } {
+  const baseMarkups: Markup[] = [];
+  const overlayMarkups: Extract<Markup, { kind: "cable" }>[] = [];
+
+  for (const markup of markups) {
+    if (markup.kind === "cable" && highlightedIds.has(markup.id)) {
+      overlayMarkups.push(markup);
+    } else {
+      baseMarkups.push(markup);
+    }
+  }
+
+  return { baseMarkups, overlayMarkups };
 }
 
 function kindPriority(markup: Markup): number {

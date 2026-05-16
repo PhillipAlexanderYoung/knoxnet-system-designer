@@ -1,7 +1,7 @@
 import Dexie, { type Table } from "dexie";
 import type { Project, Sheet } from "../store/projectStore";
 import type { SheetSource, SheetSourceKind } from "../lib/sheetSource";
-import { migrateProjectV1toV2 } from "../lib/migrate";
+import { migrateProject } from "../lib/migrate";
 
 // Sheets store their binary backing (PDF bytes, raster bytes, parsed-DXF
 // bytes, SVG text) separately from the project record so the project
@@ -317,7 +317,7 @@ export async function loadProject(id: string): Promise<Project | null> {
   // Run any project-level migrators just in case the stored record is
   // older than the current schema (e.g. a sheet missing .source after
   // load fallback).
-  return migrateProjectV1toV2({ ...stored.data, sheets } as Project);
+  return migrateProject({ ...stored.data, sheets } as Project);
 }
 
 // ───────── delete / rename / duplicate ─────────

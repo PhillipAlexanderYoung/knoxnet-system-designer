@@ -12,6 +12,7 @@ import {
   findDeviceByTag,
   internalEndpointPortLabel,
 } from "./connections";
+import { isRouteInfrastructureDevice } from "./cableRuns";
 
 export const DEFAULT_NETWORK_START_IP = "192.168.1.100";
 export const DEFAULT_SUBNET_MASK = "255.255.255.0";
@@ -221,6 +222,7 @@ function directConnectedDevice(
   if (connection.fromTag === switchTag) {
     const device = findDeviceByTag(project, connection.toTag);
     if (!device) return undefined;
+    if (isRouteInfrastructureDevice(device)) return undefined;
     return {
       device,
       devicePort: connectionToLabel(connection, project),
@@ -230,6 +232,7 @@ function directConnectedDevice(
   if (connection.toTag === switchTag) {
     const device = findDeviceByTag(project, connection.fromTag);
     if (!device) return undefined;
+    if (isRouteInfrastructureDevice(device)) return undefined;
     return {
       device,
       devicePort: connectionFromLabel(connection, project),
@@ -252,6 +255,7 @@ function internalConnectedDevice(
   const otherTag = switchIsSource ? connection.toTag : connection.fromTag;
   const device = findDeviceByTag(project, otherTag);
   if (!device || device.id === switchDevice.id) return undefined;
+  if (isRouteInfrastructureDevice(device)) return undefined;
   return {
     device,
     devicePort: switchIsSource
