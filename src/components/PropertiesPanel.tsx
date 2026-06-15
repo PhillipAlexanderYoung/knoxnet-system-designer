@@ -121,6 +121,16 @@ export function PropertiesPanel({ className = "" }: { className?: string }) {
   const project = useProjectStore((s) => s.project);
   const addMarkup = useProjectStore((s) => s.addMarkup);
   const nextTag = useProjectStore((s) => s.nextTag);
+  const propertiesPanelFocusRequest = useProjectStore((s) => s.propertiesPanelFocusRequest);
+  const panelRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (!propertiesPanelFocusRequest) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    panel.focus({ preventScroll: true });
+  }, [propertiesPanelFocusRequest]);
 
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const selectedMarkups = useMemo(() => {
@@ -160,7 +170,12 @@ export function PropertiesPanel({ className = "" }: { className?: string }) {
   };
 
   return (
-    <aside className={`w-72 shrink-0 border-l border-white/5 bg-ink-800/60 backdrop-blur-md flex flex-col ${className}`}>
+    <aside
+      ref={panelRef}
+      tabIndex={-1}
+      data-testid="properties-panel"
+      className={`w-72 shrink-0 border-l border-white/5 bg-ink-800/60 backdrop-blur-md flex flex-col outline-none focus-visible:ring-1 focus-visible:ring-amber-knox/40 ${className}`}
+    >
       <div className="px-3 py-2.5 border-b border-white/5 flex items-center justify-between">
         <div className="label">Properties</div>
         {selectedMarkups.length > 0 && (

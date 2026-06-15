@@ -139,3 +139,16 @@ body,
   touch-action: none;
   overscroll-behavior: contain;
 }
+
+/* Subtle canvas ring when the guided flow nudges the user to place a device. */
+.flow-hint-canvas::after {
+  content: "";
+  position: absolute;
+  inset: 10px;
+  border: 2px solid rgba(244, 183, 64, 0.38);
+  border-radius: 10px;
+  pointer-events: none;
+  animation: pulseGlow 1.6s ease-in-out infinite;
+  box-shadow: 0 0 0 1px rgba(244, 183, 64, 0.2),
+    0 0 28px rgba(244, 183, 64, 0.1);
+}

@@ -65,6 +65,7 @@ import {
 import { validateProject, validationMarkupIdsForIssues } from "../lib/validation";
 import { scaleForTouch } from "../lib/touchControls";
 import { useTouchControlScale } from "../hooks/useTouchControlScale";
+import { shouldOpenDeviceProperties } from "../lib/deviceProperties";
 
 type TagSettings = Pick<Project, "tagDefaults" | "branding"> | null;
 type HoverHint = { text: string; x: number; y: number; targetKey: string; fading?: boolean };
@@ -92,6 +93,7 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
   const validationHighlightMarkupIds = useProjectStore((s) => s.validationHighlightMarkupIds);
   const validationIssueMode = useProjectStore((s) => s.validationIssueMode);
   const setSelected = useProjectStore((s) => s.setSelected);
+  const requestPropertiesPanelFocus = useProjectStore((s) => s.requestPropertiesPanelFocus);
   const updateMarkup = useProjectStore((s) => s.updateMarkup);
   const moveDeviceMarkup = useProjectStore((s) => s.moveDeviceMarkup);
   const notifyLockedMoveAttempt = useProjectStore((s) => s.notifyLockedMoveAttempt);
@@ -335,6 +337,24 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
     ],
   );
 
+  const handleMarkupOpenProperties = useCallback(
+    (m: Markup, e: any) => {
+      if (!shouldOpenDeviceProperties(m, activeTool, freehandErasing)) return;
+      e.cancelBubble = true;
+      if (e.evt) e.evt.stopPropagation?.();
+      if (activeTool !== "select") setActiveTool("select");
+      setSelected([m.id]);
+      requestPropertiesPanelFocus();
+    },
+    [
+      activeTool,
+      freehandErasing,
+      requestPropertiesPanelFocus,
+      setActiveTool,
+      setSelected,
+    ],
+  );
+
   return (
     <Group>
       {coverageVisible && sheet.calibration && (
@@ -395,6 +415,7 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
             validationHighlighted={isValidationHighlighted}
             draggable={draggable}
             onMarkupClick={handleMarkupClick}
+            onMarkupOpenProperties={handleMarkupOpenProperties}
             updateMarkup={updateMarkup}
             moveDeviceMarkup={moveDeviceMarkup}
             notifyLockedMoveAttempt={notifyLockedMoveAttempt}
@@ -448,6 +469,7 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
               validationHighlighted={isValidationHighlighted}
               draggable={draggable}
               onMarkupClick={handleMarkupClick}
+              onMarkupOpenProperties={handleMarkupOpenProperties}
               updateMarkup={updateMarkup}
               moveDeviceMarkup={moveDeviceMarkup}
               notifyLockedMoveAttempt={notifyLockedMoveAttempt}
@@ -492,6 +514,7 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
               validationHighlighted={isValidationHighlighted}
               draggable={draggable}
               onMarkupClick={handleMarkupClick}
+              onMarkupOpenProperties={handleMarkupOpenProperties}
               updateMarkup={updateMarkup}
               moveDeviceMarkup={moveDeviceMarkup}
               notifyLockedMoveAttempt={notifyLockedMoveAttempt}
@@ -533,6 +556,7 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
               validationHighlighted={true}
               draggable={draggable}
               onMarkupClick={handleMarkupClick}
+              onMarkupOpenProperties={handleMarkupOpenProperties}
               updateMarkup={updateMarkup}
               moveDeviceMarkup={moveDeviceMarkup}
               notifyLockedMoveAttempt={notifyLockedMoveAttempt}
@@ -595,6 +619,7 @@ const MarkupNode = memo(function MarkupNode({
   validationHighlighted,
   draggable,
   onMarkupClick,
+  onMarkupOpenProperties,
   updateMarkup,
   moveDeviceMarkup,
   notifyLockedMoveAttempt,
@@ -617,6 +642,7 @@ const MarkupNode = memo(function MarkupNode({
   validationHighlighted: boolean;
   draggable: boolean;
   onMarkupClick: (m: Markup, e: any) => void;
+  onMarkupOpenProperties: (m: Markup, e: any) => void;
   updateMarkup: ReturnType<typeof useProjectStore.getState>["updateMarkup"];
   moveDeviceMarkup: ReturnType<typeof useProjectStore.getState>["moveDeviceMarkup"];
   notifyLockedMoveAttempt: ReturnType<typeof useProjectStore.getState>["notifyLockedMoveAttempt"];
@@ -634,6 +660,10 @@ const MarkupNode = memo(function MarkupNode({
   const handleClick = useCallback(
     (e: any) => onMarkupClick(markup, e),
     [markup, onMarkupClick],
+  );
+  const handleOpenProperties = useCallback(
+    (e: any) => onMarkupOpenProperties(markup, e),
+    [markup, onMarkupOpenProperties],
   );
   const handleMouseEnter = useCallback(
     (e: any) => {
@@ -683,6 +713,7 @@ const MarkupNode = memo(function MarkupNode({
         (hovered && !dragging) || hinted,
         validationHighlighted,
         handleClick,
+        handleOpenProperties,
         clearHoverForDrag,
         finishHoverDrag,
         showHoverHint,
@@ -711,6 +742,7 @@ function renderMarkup(
   hovered: boolean,
   validationHighlighted: boolean,
   onClick: (e: any) => void,
+  onOpenProperties: (e: any) => void,
   clearHoverForDrag: (e: any) => void,
   finishHoverDrag: (e: any) => void,
   showHoverHint: ShowHoverHint,
@@ -952,6 +984,8 @@ function renderMarkup(
             dragDistance={2}
             onClick={onClick}
             onTap={onClick}
+            onDblClick={onOpenProperties}
+            onDblTap={onOpenProperties}
             onMouseDown={(e) => {
               blockStageToolDispatch(e);
               if (!draggable) {
@@ -1023,6 +1057,8 @@ function renderMarkup(
                 touchScale={touchScale}
                 onClick={onClick}
                 onTap={onClick}
+                onDblClick={onOpenProperties}
+                onDblTap={onOpenProperties}
                 onMouseDown={handlePointerDown}
                 onMouseEnter={(e) => {
                   showHoverHint({
@@ -1188,6 +1224,8 @@ function renderMarkup(
                 dragDistance={MARKUP_DRAG_DISTANCE}
                 onClick={onClick}
                 onTap={onClick}
+                onDblClick={onOpenProperties}
+                onDblTap={onOpenProperties}
                 onMouseDown={handlePointerDown}
                 onMouseEnter={(e) => {
                   showHoverHint({

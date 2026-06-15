@@ -12,6 +12,7 @@ import { CalibrationDialog } from "./CalibrationDialog";
 import { saveProject } from "../persist/db";
 import { RackBuilder } from "../rack/RackBuilder";
 import { DiagramBuilder } from "../diagrams/DiagramBuilder";
+import { useFlowHintClass } from "../hooks/useFlowHints";
 import {
   Calculator,
   Layers,
@@ -33,6 +34,7 @@ export function Workspace() {
   const [mobileDrawer, setMobileDrawer] = useState<MobileDrawer>(null);
   const [mobilePaletteOpen, setMobilePaletteOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const propertiesPanelFocusRequest = useProjectStore((s) => s.propertiesPanelFocusRequest);
   const [calibrationOpen, setCalibrationOpen] = useState<{
     pendingPoints: { x: number; y: number }[];
   } | null>(null);
@@ -53,6 +55,11 @@ export function Workspace() {
     mq.addEventListener("change", sync);
     return () => mq.removeEventListener("change", sync);
   }, []);
+
+  useEffect(() => {
+    if (!propertiesPanelFocusRequest) return;
+    if (isMobile) setMobileDrawer("properties");
+  }, [propertiesPanelFocusRequest, isMobile]);
 
   if (!project) return null;
 
@@ -137,6 +144,7 @@ function MobileCanvasDock({
   onToggleBid: () => void;
   onTogglePalette: () => void;
 }) {
+  const libraryHintClass = useFlowHintClass("library");
   return (
     <div className="md:hidden absolute left-3 right-3 top-3 z-30 flex items-center justify-between gap-2 pointer-events-none">
       <div className="panel rounded-full px-1.5 py-1 flex items-center gap-1 pointer-events-auto">
@@ -148,7 +156,7 @@ function MobileCanvasDock({
         </MobileDockButton>
       </div>
       <div className="panel rounded-full px-1.5 py-1 flex items-center gap-1 pointer-events-auto">
-        <MobileDockButton onClick={onTogglePalette} label="Library" active={paletteOpen}>
+        <MobileDockButton onClick={onTogglePalette} label="Library" active={paletteOpen} hintClass={libraryHintClass}>
           <Library className="w-4 h-4" />
         </MobileDockButton>
         <MobileDockButton onClick={onToggleBid} label="Bid" active={bidOpen}>
@@ -163,18 +171,20 @@ function MobileDockButton({
   children,
   label,
   active,
+  hintClass = "",
   onClick,
 }: {
   children: React.ReactNode;
   label: string;
   active?: boolean;
+  hintClass?: string;
   onClick: () => void;
 }) {
   return (
     <button
       onClick={onClick}
       data-active={active}
-      className="min-h-10 rounded-full px-3 text-xs font-medium text-ink-100 inline-flex items-center gap-1.5 data-[active=true]:bg-amber-knox/15 data-[active=true]:text-amber-knox"
+      className={`min-h-10 rounded-full px-3 text-xs font-medium text-ink-100 inline-flex items-center gap-1.5 data-[active=true]:bg-amber-knox/15 data-[active=true]:text-amber-knox ${hintClass}`}
     >
       {children}
       <span>{label}</span>

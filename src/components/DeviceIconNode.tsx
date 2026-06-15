@@ -17,6 +17,8 @@ interface Props {
   onMouseLeave?: (e: any) => void;
   onTap?: (e: any) => void;
   onClick?: (e: any) => void;
+  onDblClick?: (e: any) => void;
+  onDblTap?: (e: any) => void;
   dragDistance?: number;
   draggable?: boolean;
   onDragStart?: (e: any) => void;
@@ -45,6 +47,8 @@ export function DeviceIconNode({
   onMouseLeave,
   onTap,
   onClick,
+  onDblClick,
+  onDblTap,
   dragDistance,
   draggable,
   onDragStart,
@@ -68,6 +72,8 @@ export function DeviceIconNode({
       onMouseLeave={onMouseLeave}
       onClick={onClick}
       onTap={onTap ?? onClick}
+      onDblClick={onDblClick}
+      onDblTap={onDblTap}
       dragDistance={dragDistance}
       draggable={draggable}
       onDragStart={onDragStart}

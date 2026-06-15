@@ -69,6 +69,17 @@ import {
   type ValidationResolveResult,
 } from "../lib/validation";
 import { enqueueToast, type Toast, type ToastKind } from "../lib/toasts";
+import {
+  isFlowHintsGloballyDone,
+  markFlowHintsGloballyDone,
+  projectNeedsCalibration,
+  reduceFlowHint,
+  sheetNeedsCalibration,
+  type FlowHintEvent,
+  type FlowHintStep,
+} from "../lib/flowHints";
+
+export type { FlowHintStep };
 
 // ───────── Types ─────────
 
@@ -1254,10 +1265,15 @@ interface State {
   paletteOpen: boolean;
   settingsOpen: boolean;
   commandPaletteOpen: boolean;
+  /** Monotonic counter — Workspace/PropertiesPanel react to open/focus requests. */
+  propertiesPanelFocusRequest: number;
   /** Toast notifications */
   toasts: Toast[];
   /** Transient nudge shown when a locked item blocks movement. */
   lockMoveHint: LockMoveHintState | null;
+  /** Progressive onboarding — illuminates the next workflow control. */
+  flowHintStep: FlowHintStep | null;
+  flowHintsEnabled: boolean;
 
   // actions
   newProject: (meta?: Partial<ProjectMeta>) => void;
@@ -1447,6 +1463,7 @@ interface State {
   togglePalette: () => void;
   toggleSettings: () => void;
   toggleCommandPalette: () => void;
+  requestPropertiesPanelFocus: () => void;
 
   pushToast: (kind: ToastKind, message: string) => void;
   dismissToast: (id: string) => void;
@@ -1583,6 +1600,16 @@ const blankProject = (meta?: Partial<ProjectMeta>): Project => {
   };
 };
 
+function applyFlowHints(
+  enabled: boolean,
+  step: FlowHintStep | null,
+  event: FlowHintEvent,
+): { flowHintStep: FlowHintStep | null; flowHintsEnabled: boolean } {
+  const next = reduceFlowHint(enabled, step, event);
+  if (next.markGlobalDone) markFlowHintsGloballyDone();
+  return { flowHintStep: next.step, flowHintsEnabled: next.enabled };
+}
+
 export const useProjectStore = create<State>()(
   subscribeWithSelector((set, get) => ({
     project: null,
@@ -1624,12 +1651,16 @@ export const useProjectStore = create<State>()(
     paletteOpen: true,
     settingsOpen: false,
     commandPaletteOpen: false,
+    propertiesPanelFocusRequest: 0,
     toasts: [],
     lockMoveHint: null,
+    flowHintStep: null,
+    flowHintsEnabled: false,
 
     newProject: (meta) =>
       set(() => {
         const project = normalizeProject(blankProject(meta));
+        const hintsOn = !isFlowHintsGloballyDone();
         return {
         project,
         activeSheetId: null,
@@ -1645,6 +1676,8 @@ export const useProjectStore = create<State>()(
         cableRunDraft: null,
         cableRunBulkBranch: null,
         lockMoveHint: null,
+        flowHintStep: null,
+        flowHintsEnabled: hintsOn,
         history: emptyHistory(),
       };
       }),
@@ -1673,6 +1706,8 @@ export const useProjectStore = create<State>()(
         cableRunDraft: null,
         cableRunBulkBranch: null,
         lockMoveHint: null,
+        flowHintStep: "done",
+        flowHintsEnabled: false,
         history: emptyHistory(),
       };
       }),
@@ -1937,10 +1972,15 @@ export const useProjectStore = create<State>()(
         if (!s.project) return s;
         const sheets = [...s.project.sheets, sheet];
         const project = { ...s.project, sheets, updatedAt: Date.now() };
+        const hints = applyFlowHints(s.flowHintsEnabled, s.flowHintStep, {
+          type: "sheet_added",
+          needsCalibration: sheetNeedsCalibration(sheet),
+        });
         return {
           project,
           history: historyAfterProjectChange(s.history, s.project),
           activeSheetId: s.activeSheetId ?? sheet.id,
+          ...hints,
         };
       }),
 
@@ -2322,18 +2362,31 @@ export const useProjectStore = create<State>()(
       }),
 
     setActiveTool: (t) =>
-      set((s) => ({
-        activeTool: t,
-        // Leaving the freehand tool turns the eraser sub-mode off so it
-        // doesn't surprise the user the next time they switch back.
-        freehandErasing: t === "freehand" ? s.freehandErasing : false,
-        cableRunDraft: t === "cable" ? s.cableRunDraft : null,
-      })),
+      set((s) => {
+        const hints = applyFlowHints(s.flowHintsEnabled, s.flowHintStep, {
+          type: "tool_selected",
+          tool: t,
+        });
+        return {
+          activeTool: t,
+          freehandErasing: t === "freehand" ? s.freehandErasing : false,
+          cableRunDraft: t === "cable" ? s.cableRunDraft : null,
+          ...hints,
+        };
+      }),
     setActiveDevice: (id) =>
-      set({
-        activeDeviceId: id,
-        activeTool: id ? "device" : "select",
-        cableRunDraft: null,
+      set((s) => {
+        const hints = id
+          ? applyFlowHints(s.flowHintsEnabled, s.flowHintStep, {
+              type: "device_selected",
+            })
+          : { flowHintStep: s.flowHintStep, flowHintsEnabled: s.flowHintsEnabled };
+        return {
+          activeDeviceId: id,
+          activeTool: id ? "device" : "select",
+          cableRunDraft: null,
+          ...hints,
+        };
       }),
     setActiveCable: (id) => set({ activeCableId: id }),
     setActiveConduitType: (value) =>
@@ -2780,6 +2833,15 @@ export const useProjectStore = create<State>()(
             : m.kind === "device"
               ? withDefaultNetworkConfig(m, s.project)
             : m;
+        const hints =
+          m.kind === "device"
+            ? applyFlowHints(s.flowHintsEnabled, s.flowHintStep, {
+                type: "device_placed",
+              })
+            : {
+                flowHintStep: s.flowHintStep,
+                flowHintsEnabled: s.flowHintsEnabled,
+              };
         return {
           history: historyAfterProjectChange(s.history, s.project),
           project: {
@@ -2791,6 +2853,7 @@ export const useProjectStore = create<State>()(
             ),
             updatedAt: Date.now(),
           },
+          ...hints,
         };
       }),
 
@@ -3573,15 +3636,23 @@ export const useProjectStore = create<State>()(
     setCalibration: (sheetId, c) =>
       set((s) => {
         if (!s.project) return s;
-        return {
-          project: {
-            ...s.project,
-            sheets: s.project.sheets.map((sh) =>
-              sh.id === sheetId ? { ...sh, calibration: c } : sh,
-            ),
-            updatedAt: Date.now(),
-          },
+        const project = {
+          ...s.project,
+          sheets: s.project.sheets.map((sh) =>
+            sh.id === sheetId ? { ...sh, calibration: c } : sh,
+          ),
+          updatedAt: Date.now(),
         };
+        const hints = c
+          ? applyFlowHints(s.flowHintsEnabled, s.flowHintStep, {
+              type: "calibration_set",
+              stillNeedsCalibration: projectNeedsCalibration(project),
+            })
+          : {
+              flowHintStep: s.flowHintStep,
+              flowHintsEnabled: s.flowHintsEnabled,
+            };
+        return { project, ...hints };
       }),
 
     setCursor: (p) => set({ cursor: p }),
@@ -3624,6 +3695,10 @@ export const useProjectStore = create<State>()(
     toggleSettings: () => set((s) => ({ settingsOpen: !s.settingsOpen })),
     toggleCommandPalette: () =>
       set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen })),
+    requestPropertiesPanelFocus: () =>
+      set((s) => ({
+        propertiesPanelFocusRequest: s.propertiesPanelFocusRequest + 1,
+      })),
 
     pushToast: (kind, message) =>
       set((s) => ({

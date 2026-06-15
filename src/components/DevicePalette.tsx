@@ -4,6 +4,7 @@ import { categoryColor, categoryLabel } from "../brand/tokens";
 import { useProjectStore } from "../store/projectStore";
 import { Search, X, Clock } from "lucide-react";
 import { DeviceTile } from "./DeviceTile";
+import { useFlowHintClass } from "../hooks/useFlowHints";
 
 const CATEGORIES: DeviceCategory[] = [
   "cameras",
@@ -81,6 +82,7 @@ export function DevicePalette({
   const [filter, setFilter] = useState<DeviceCategory | "all" | "recents">("all");
   const [q, setQ] = useState("");
   const [recents, setRecents] = useState<string[]>(() => loadRecents());
+  const libraryHintClass = useFlowHintClass("library");
 
   // Track recents — bump deviceId to top whenever user picks a device
   useEffect(() => {
@@ -126,7 +128,7 @@ export function DevicePalette({
   }, [list, q]);
 
   return (
-    <div className={`absolute left-3 right-3 top-14 bottom-20 z-40 panel rounded-xl flex flex-col animate-slide-up md:left-4 md:right-auto md:top-20 md:bottom-16 md:w-80 md:z-20 ${className}`}>
+    <div className={`absolute left-3 right-3 top-14 bottom-20 z-40 panel rounded-xl flex flex-col animate-slide-up md:left-4 md:right-auto md:top-20 md:bottom-16 md:w-80 md:z-20 ${libraryHintClass} ${className}`}>
       <div className="px-3 py-2.5 border-b border-white/5 flex items-center justify-between">
         <div className="label">Device Library</div>
         <div className="flex items-center gap-1">

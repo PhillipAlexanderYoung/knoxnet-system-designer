@@ -26,6 +26,7 @@ import {
   LockOpen,
 } from "lucide-react";
 import { useProjectStore, type ToolId } from "../store/projectStore";
+import { useFlowHintClass } from "../hooks/useFlowHints";
 import { cables, cablesById } from "../data/cables";
 import { selectActiveSheet } from "../store/projectStore";
 import { CONDUIT_SIZES, CONDUIT_TYPES } from "../lib/conduit";
@@ -132,6 +133,9 @@ export function Toolbar() {
   const allDevicesLocked =
     deviceLockStats.total > 0 && deviceLockStats.locked === deviceLockStats.total;
   const showGlobalLockHint = !!lockMoveHint && lockMoveHint.scope !== "selection";
+  const calibrateHintClass = useFlowHintClass("tool-calibrate");
+  const deviceHintClass = useFlowHintClass("tool-device");
+  const cableHintClass = useFlowHintClass("tool-cable");
 
   useEffect(() => {
     setFiberStrandInput(String(activeFiberStrandCount));
@@ -168,6 +172,14 @@ export function Toolbar() {
       {TOOLS.map((t) => {
         const Icon = t.icon;
         const isActive = activeTool === t.id;
+        const hintClass =
+          t.id === "calibrate"
+            ? calibrateHintClass
+            : t.id === "device"
+              ? deviceHintClass
+              : t.id === "cable"
+                ? cableHintClass
+                : "";
         const onClick = () => {
           setTool(t.id);
           if (t.id === "device" && !paletteOpen) togglePalette();
@@ -177,7 +189,7 @@ export function Toolbar() {
             key={t.id}
             onClick={onClick}
             data-active={isActive}
-            className="tool-btn group"
+            className={`tool-btn group ${hintClass}`}
             title={`${t.label} (${t.hotkey})`}
           >
             <Icon className="w-4 h-4" />

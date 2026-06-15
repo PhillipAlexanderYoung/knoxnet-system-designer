@@ -10,6 +10,7 @@ import { ZoomCluster } from "./ZoomCluster";
 import { SelectionActionBar } from "./SelectionActionBar";
 import { MaskActionBar } from "./MaskActionBar";
 import { useToolGesture } from "../hooks/useToolGesture";
+import { useFlowHintCanvasClass } from "../hooks/useFlowHints";
 import { isCoarsePointer } from "../lib/touchControls";
 import {
   panCanvasViewport,
@@ -54,6 +55,7 @@ export function Editor({ sheet, onCalibrateConfirm }: Props) {
   const [spaceHeld, setSpaceHeld] = useState(false);
   const latestViewportRef = useRef(viewport);
   const { rectHandlers, preview } = useToolGesture(sheet, onCalibrateConfirm);
+  const canvasHintClass = useFlowHintCanvasClass();
 
   // Track container size
   useEffect(() => {
@@ -329,7 +331,7 @@ export function Editor({ sheet, onCalibrateConfirm }: Props) {
   return (
     <div
       ref={containerRef}
-      className="absolute inset-0 canvas-touch-surface"
+      className={`absolute inset-0 canvas-touch-surface ${canvasHintClass}`}
       style={{ cursor: cursorStyle }}
     >
       {size.w > 0 && size.h > 0 && (
