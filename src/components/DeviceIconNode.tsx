@@ -22,6 +22,8 @@ interface Props {
   onDragStart?: (e: any) => void;
   onDragMove?: (e: any) => void;
   onDragEnd?: (e: any) => void;
+  /** Enlarges grab hit target on touch/coarse-pointer devices. */
+  touchScale?: number;
 }
 
 /**
@@ -48,10 +50,12 @@ export function DeviceIconNode({
   onDragStart,
   onDragMove,
   onDragEnd,
+  touchScale = 1,
 }: Props) {
   const color = colorOverride ?? categoryColor[device.category] ?? "#94A0B8";
   const fillSoft = color + "33"; // ~20% alpha
   const half = size / 2;
+  const grabRadius = (half + 2) * touchScale;
   const iconScale = size / 24;
   const hoverActive = hovered && !selected;
   return (
@@ -141,12 +145,12 @@ export function DeviceIconNode({
       <Circle
         x={0}
         y={0}
-        radius={half + 2}
+        radius={grabRadius}
         fill="rgba(11,18,32,0.01)"
         perfectDrawEnabled={false}
         hitFunc={(ctx, shape) => {
           ctx.beginPath();
-          ctx.arc(0, 0, half + 2, 0, Math.PI * 2, false);
+          ctx.arc(0, 0, grabRadius, 0, Math.PI * 2, false);
           ctx.closePath();
           ctx.fillStrokeShape(shape);
         }}

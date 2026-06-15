@@ -10,6 +10,7 @@ import { ZoomCluster } from "./ZoomCluster";
 import { SelectionActionBar } from "./SelectionActionBar";
 import { MaskActionBar } from "./MaskActionBar";
 import { useToolGesture } from "../hooks/useToolGesture";
+import { isCoarsePointer } from "../lib/touchControls";
 import {
   panCanvasViewport,
   saveCanvasViewport,
@@ -213,10 +214,6 @@ export function Editor({ sheet, onCalibrateConfirm }: Props) {
     setPanning(false);
     panStart.current = null;
   };
-
-  const isCoarsePointer = () =>
-    typeof window !== "undefined" &&
-    window.matchMedia?.("(hover: none) and (pointer: coarse)").matches;
 
   const touchPointsFor = (stage: Konva.Stage, touches: TouchList) => {
     const rect = stage.container().getBoundingClientRect();

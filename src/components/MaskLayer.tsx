@@ -6,6 +6,7 @@ import {
   type Sheet,
   type MaskRegion,
 } from "../store/projectStore";
+import { useTouchControlScale } from "../hooks/useTouchControlScale";
 
 /**
  * Visualizes per-sheet "mask" rectangles — the cover-ups the user has drawn
@@ -66,6 +67,7 @@ function MaskNode({
 }) {
   const rectRef = useRef<Konva.Rect>(null);
   const trRef = useRef<Konva.Transformer>(null);
+  const touchScale = useTouchControlScale();
 
   // Keep the Transformer attached to the Rect when this mask becomes
   // selected, and detach when it's not.
@@ -142,7 +144,7 @@ function MaskNode({
           rotateEnabled={false}
           flipEnabled={false}
           ignoreStroke
-          anchorSize={8}
+          anchorSize={8 * touchScale}
           anchorCornerRadius={2}
           anchorStroke="#F4B740"
           anchorFill="#0B1220"

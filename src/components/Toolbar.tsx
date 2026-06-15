@@ -147,7 +147,7 @@ export function Toolbar() {
   }, [clearLockMoveHint, lockMoveHint]);
 
   return (
-    <div className="absolute left-2 right-2 bottom-3 z-20 flex items-center gap-1 overflow-x-auto rounded-xl panel px-2 py-2 animate-slide-up [scrollbar-width:none] md:left-1/2 md:right-auto md:top-4 md:bottom-auto md:-translate-x-1/2 md:overflow-visible md:px-1.5 md:py-1.5 [&::-webkit-scrollbar]:hidden">
+    <div className="absolute left-2 right-2 bottom-3 z-20 flex flex-nowrap items-center gap-1 overflow-x-auto overflow-y-hidden touch-pan-x overscroll-y-none rounded-xl panel px-2 py-2 animate-slide-up [scrollbar-width:none] md:left-1/2 md:right-auto md:top-4 md:bottom-auto md:-translate-x-1/2 md:overflow-visible md:touch-auto md:px-1.5 md:py-1.5 [&::-webkit-scrollbar]:hidden">
       <button
         onClick={undo}
         disabled={!canUndo}

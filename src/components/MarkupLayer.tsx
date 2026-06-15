@@ -63,6 +63,8 @@ import {
   scheduleRowsForDisplay,
 } from "../lib/scheduleBlocks";
 import { validateProject, validationMarkupIdsForIssues } from "../lib/validation";
+import { scaleForTouch } from "../lib/touchControls";
+import { useTouchControlScale } from "../hooks/useTouchControlScale";
 
 type TagSettings = Pick<Project, "tagDefaults" | "branding"> | null;
 type HoverHint = { text: string; x: number; y: number; targetKey: string; fading?: boolean };
@@ -98,6 +100,7 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
   const setActiveTool = useProjectStore((s) => s.setActiveTool);
   const cursor = useProjectStore((s) => s.cursor);
   const viewport = useProjectStore((s) => s.viewport);
+  const touchScale = useTouchControlScale();
   const cableRunBulkBranch = useProjectStore((s) => s.cableRunBulkBranch);
   const placeCableRunEndpoint = useProjectStore((s) => s.placeCableRunEndpoint);
   const branchCableRunEndpoint = useProjectStore((s) => s.branchCableRunEndpoint);
@@ -402,6 +405,7 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
             onHoverChange={setHoveredMarkupId}
             showHoverHint={showHoverHint}
             hideHoverHint={hideHoverHint}
+            touchScale={touchScale}
           />
         );
       })}
@@ -453,6 +457,7 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
               onHoverChange={setHoveredMarkupId}
               showHoverHint={showHoverHint}
               hideHoverHint={hideHoverHint}
+              touchScale={touchScale}
             />
           );
         })}
@@ -496,6 +501,7 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
               onHoverChange={setHoveredMarkupId}
               showHoverHint={showHoverHint}
               hideHoverHint={hideHoverHint}
+              touchScale={touchScale}
             />
           );
         })}
@@ -537,6 +543,7 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
               onHoverChange={setHoveredMarkupId}
               showHoverHint={showHoverHint}
               hideHoverHint={hideHoverHint}
+              touchScale={touchScale}
             />
           );
         })}
@@ -598,6 +605,7 @@ const MarkupNode = memo(function MarkupNode({
   onHoverChange,
   showHoverHint,
   hideHoverHint,
+  touchScale,
 }: {
   markup: Markup;
   project: Project | null;
@@ -619,6 +627,7 @@ const MarkupNode = memo(function MarkupNode({
   onHoverChange: (id: string | null) => void;
   showHoverHint: ShowHoverHint;
   hideHoverHint: () => void;
+  touchScale: number;
 }) {
   const [hovered, setHovered] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -685,6 +694,7 @@ const MarkupNode = memo(function MarkupNode({
         lockedMoveHintMessage,
         runLabelLayout,
         renderPart,
+        touchScale,
       )}
     </Group>
   );
@@ -712,7 +722,9 @@ function renderMarkup(
   lockedMoveHintMessage?: string,
   runLabelLayout?: RunLabelLayout,
   renderPart: MarkupRenderPart = "body",
+  touchScale = 1,
 ) {
+  const ctl = (base: number) => scaleForTouch(base, touchScale);
   const notifyLockedAttempt = (message = lockedMoveHintMessage) => {
     if (!message) return;
     notifyLockedMoveAttempt({
@@ -928,7 +940,7 @@ function renderMarkup(
         const slotSize = nestedBubbleSize(m);
         const bubbleSize = Math.max(8, slotSize - 2);
         const radius = bubbleSize / 2;
-        const hitRadius = nestedBubbleHitRadius(m);
+        const hitRadius = ctl(nestedBubbleHitRadius(m));
         const bubbleText = nestedBubbleLabel(m);
         const textColor = nestedBubbleLabelColor(color);
         const nestedDragLocked = !!(m.locked || nestedParent.locked);
@@ -1008,6 +1020,7 @@ function renderMarkup(
                 selected={selected}
                 hovered={hovered || validationHighlighted}
                 dragDistance={MARKUP_DRAG_DISTANCE}
+                touchScale={touchScale}
                 onClick={onClick}
                 onTap={onClick}
                 onMouseDown={handlePointerDown}
@@ -1118,23 +1131,23 @@ function renderMarkup(
                     }}
                   >
                     <Circle
-                      radius={8}
+                      radius={ctl(8)}
                       fill="rgba(244,183,64,0.01)"
                     />
                     <Circle
-                      radius={1.1}
+                      radius={ctl(1.1)}
                       fill="#F4B740"
                       stroke="#FFE7A8"
-                      strokeWidth={hovered ? 0.55 : 0.35}
+                      strokeWidth={hovered ? ctl(0.55) : ctl(0.35)}
                       shadowColor="#F4B740"
-                      shadowBlur={hovered ? 5 : 2.5}
+                      shadowBlur={hovered ? ctl(5) : ctl(2.5)}
                       shadowOpacity={hovered ? 0.55 : 0.35}
                       listening={false}
                     />
                     <Circle
-                      x={-0.35}
-                      y={-0.4}
-                      radius={0.35}
+                      x={ctl(-0.35)}
+                      y={ctl(-0.4)}
+                      radius={ctl(0.35)}
                       fill="#FFFFFF"
                       opacity={0.85}
                       listening={false}
@@ -1562,20 +1575,20 @@ function renderMarkup(
                     finishHoverDrag(e);
                   }}
                 >
-                  <Circle radius={7} fill="rgba(11,18,32,0.01)" />
+                  <Circle radius={ctl(7)} fill="rgba(11,18,32,0.01)" />
                   <Circle
-                    radius={2.6}
+                    radius={ctl(2.6)}
                     fill="#0B1220"
                     stroke={cableColor}
-                    strokeWidth={hovered ? 1.15 : 0.9}
+                    strokeWidth={hovered ? ctl(1.15) : ctl(0.9)}
                     opacity={hovered ? 1 : 0.92}
                     shadowColor={cableColor}
-                    shadowBlur={hovered ? 4 : 0}
+                    shadowBlur={hovered ? ctl(4) : 0}
                     shadowOpacity={hovered ? HOVER_SHADOW_OPACITY : 0}
                     listening={false}
                   />
                   <Circle
-                    radius={0.9}
+                    radius={ctl(0.9)}
                     fill="#F5F7FA"
                     opacity={0.85}
                     listening={false}
