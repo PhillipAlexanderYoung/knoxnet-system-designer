@@ -3076,13 +3076,19 @@ export const useProjectStore = create<State>()(
       }),
 
     setSelected: (ids) =>
-      set((s) => ({
-        selectedMarkupIds: ids,
-        // Picking a markup clears the brand selection so the brand
-        // transformer detaches and the user only sees one selection at a
-        // time.
-        selectedBrand: ids.length > 0 ? null : s.selectedBrand,
-      })),
+      set((s) => {
+        const unchanged =
+          s.selectedMarkupIds.length === ids.length &&
+          s.selectedMarkupIds.every((id, index) => id === ids[index]);
+        if (unchanged) return s;
+        return {
+          selectedMarkupIds: ids,
+          // Picking a markup clears the brand selection so the brand
+          // transformer detaches and the user only sees one selection at a
+          // time.
+          selectedBrand: ids.length > 0 ? null : s.selectedBrand,
+        };
+      }),
     setHintedMarkup: (id) => set({ hintedMarkupId: id, hintedMarkupIds: id ? [id] : [] }),
     setHintedMarkups: (ids) =>
       set({ hintedMarkupId: ids[0] ?? null, hintedMarkupIds: Array.from(new Set(ids)) }),

@@ -77,6 +77,8 @@ const HOVER_HINT_DELAY_MS = 120;
 const HOVER_HINT_VISIBLE_MS = 3000;
 const HOVER_HINT_FADE_MS = 350;
 const VALIDATION_RED = "#EF4444";
+/** Stage pixels before Konva starts a drag — avoids click-vs-drag races. */
+const MARKUP_DRAG_DISTANCE = 3;
 
 export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }) {
   const project = useProjectStore((s) => s.project);
@@ -719,9 +721,24 @@ function renderMarkup(
       targetIds: [m.id],
     });
   };
+  // Block the stage tool dispatcher without selecting on mousedown.
+  // Selecting during mousedown re-renders react-konva nodes and resets
+  // their x/y from store props, which breaks drag in Chromium/Brave.
+  // Use cancelBubble only — DOM stopPropagation and custom touchstart
+  // handlers interfere with Konva's internal drag listeners.
+  const blockStageToolDispatch = (e: any) => {
+    e.cancelBubble = true;
+    const stage = e.target?.getStage?.();
+    if (stage && e.evt) {
+      stage.setPointersPositions(e.evt);
+    }
+  };
   const handlePointerDown = (e: any) => {
-    onClick(e);
-    notifyLockedAttempt();
+    blockStageToolDispatch(e);
+    if (!draggable) {
+      onClick(e);
+      notifyLockedAttempt();
+    }
   };
 
   switch (m.kind) {
@@ -864,6 +881,7 @@ function renderMarkup(
       // approximation here matches what the export uses to keep the
       // editor preview aligned with the printed PDF.
       const padding = 4;
+      const tagHitPad = 4;
       const pillW = labelText.length * tagFontSize * 0.6 + padding * 2;
       const pillH = tagFontSize + padding * 2;
       const pillLeft = m.x + tagDx;
@@ -923,8 +941,11 @@ function renderMarkup(
             onClick={onClick}
             onTap={onClick}
             onMouseDown={(e) => {
-              onClick(e);
-              if (lockedMoveHintMessage || nestedDragLocked) notifyLockedAttempt();
+              blockStageToolDispatch(e);
+              if (!draggable) {
+                onClick(e);
+                if (lockedMoveHintMessage || nestedDragLocked) notifyLockedAttempt();
+              }
             }}
             onMouseEnter={(e) => {
               showHoverHint({
@@ -986,7 +1007,9 @@ function renderMarkup(
                 rotation={m.rotation ?? 0}
                 selected={selected}
                 hovered={hovered || validationHighlighted}
+                dragDistance={MARKUP_DRAG_DISTANCE}
                 onClick={onClick}
+                onTap={onClick}
                 onMouseDown={handlePointerDown}
                 onMouseEnter={(e) => {
                   showHoverHint({
@@ -1145,18 +1168,11 @@ function renderMarkup(
                   />
                 </>
               )}
-              <Label
+              <Group
                 x={pillLeft}
                 y={pillTop}
                 draggable={draggable}
-                // Distinguish click-then-mouse-out from intentional drag.
-                // Without a threshold Konva starts dragging on mousedown and
-                // the pill follows the cursor as the user moves toward the
-                // Properties panel. 8 stage pixels matches the standard
-                // browser click/drag boundary and keeps the tag "stuck" on
-                // a click-only gesture so the user can read it without
-                // accidentally repositioning it.
-                dragDistance={8}
+                dragDistance={MARKUP_DRAG_DISTANCE}
                 onClick={onClick}
                 onTap={onClick}
                 onMouseDown={handlePointerDown}
@@ -1173,10 +1189,7 @@ function renderMarkup(
                   hideHoverHint();
                   setStageCursor(e, "");
                 }}
-                onDragStart={(e) => {
-                  e.cancelBubble = true;
-                  clearHoverForDrag(e);
-                }}
+                onDragStart={clearHoverForDrag}
                 // Soft clamp during drag — keeps the pill visually tied to
                 // the device by preventing the user from accidentally
                 // stranding it across the sheet. Distance scales with
@@ -1203,30 +1216,53 @@ function renderMarkup(
                   finishHoverDrag(e);
                 }}
               >
-                <Tag
-                  fill="#0B1220"
-                  stroke={color}
-                  strokeWidth={hoverActive ? 1 : 0.75}
-                  cornerRadius={3}
-                  shadowColor={hoverActive ? color : "rgba(0,0,0,0.4)"}
-                  shadowBlur={hoverActive ? 7 : 4}
-                  shadowOpacity={hoverActive ? HOVER_SHADOW_OPACITY : 0.6}
-                  // Skip Konva's double-draw stroke pass — keeps the pill
-                  // edge crisp at any zoom without the soft-aliased halo
-                  // that the default redraw introduces.
+                <Label listening={false}>
+                  <Tag
+                    fill="#0B1220"
+                    stroke={color}
+                    strokeWidth={hoverActive ? 1 : 0.75}
+                    cornerRadius={3}
+                    shadowColor={hoverActive ? color : "rgba(0,0,0,0.4)"}
+                    shadowBlur={hoverActive ? 7 : 4}
+                    shadowOpacity={hoverActive ? HOVER_SHADOW_OPACITY : 0.6}
+                    perfectDrawEnabled={false}
+                    strokeScaleEnabled={false}
+                    listening={false}
+                  />
+                  <Text
+                    text={labelText}
+                    fontFamily="JetBrains Mono"
+                    fontStyle="500"
+                    fontSize={tagFontSize}
+                    fill="#F5F7FA"
+                    padding={padding}
+                    perfectDrawEnabled={false}
+                    listening={false}
+                  />
+                </Label>
+                {/* Dedicated grab target (topmost, visual-only Label above).
+                    Geometry hitFunc matches DeviceIconNode — avoids Brave/Konva
+                    hit-canvas misses on shadowed pills and listening=false stacks. */}
+                <Rect
+                  x={-tagHitPad}
+                  y={-tagHitPad}
+                  width={pillW + tagHitPad * 2}
+                  height={pillH + tagHitPad * 2}
+                  fill="rgba(11,18,32,0.01)"
                   perfectDrawEnabled={false}
-                  strokeScaleEnabled={false}
+                  hitFunc={(ctx, shape) => {
+                    ctx.beginPath();
+                    ctx.rect(
+                      -tagHitPad,
+                      -tagHitPad,
+                      pillW + tagHitPad * 2,
+                      pillH + tagHitPad * 2,
+                    );
+                    ctx.closePath();
+                    ctx.fillStrokeShape(shape);
+                  }}
                 />
-                <Text
-                  text={labelText}
-                  fontFamily="JetBrains Mono"
-                  fontStyle="500"
-                  fontSize={tagFontSize}
-                  fill="#F5F7FA"
-                  padding={padding}
-                  perfectDrawEnabled={false}
-                />
-              </Label>
+              </Group>
             </>
           )}
         </Group>
@@ -1298,6 +1334,7 @@ function renderMarkup(
                 shadowBlur={validationHighlighted ? 16 : selected ? 8 : hoverActive ? 6 : 0}
                 shadowOpacity={validationHighlighted ? 0.9 : selected ? 0.55 : hoverActive ? HOVER_SHADOW_OPACITY : 0}
                 onClick={onClick}
+                onTap={onClick}
                 onMouseDown={handlePointerDown}
                 onMouseEnter={(e) => {
                   if (mid) {
@@ -1342,6 +1379,7 @@ function renderMarkup(
                 shadowBlur={validationHighlighted ? 16 : selected ? 8 : hoverActive ? 6 : 0}
                 shadowOpacity={validationHighlighted ? 0.9 : selected ? 0.55 : hoverActive ? HOVER_SHADOW_OPACITY : 0}
                 onClick={onClick}
+                onTap={onClick}
                 onMouseDown={handlePointerDown}
                 onMouseEnter={(e) => {
                   if (mid) {
@@ -1558,7 +1596,9 @@ function renderMarkup(
           fontSize={m.fontSize}
           fontFamily="Inter"
           fill={m.color}
+          dragDistance={MARKUP_DRAG_DISTANCE}
           onClick={onClick}
+          onTap={onClick}
           onMouseDown={handlePointerDown}
           onMouseEnter={() => {
             showHoverHint({
@@ -1736,7 +1776,9 @@ function renderMarkup(
           stroke={m.color}
           fill={m.fill}
           strokeWidth={selected ? 2.5 : hovered ? 1.8 : 1.5}
+          dragDistance={MARKUP_DRAG_DISTANCE}
           onClick={onClick}
+          onTap={onClick}
           onMouseDown={handlePointerDown}
           onMouseEnter={() => {
             showHoverHint({

@@ -107,6 +107,9 @@ import {
   ClipboardList,
 } from "lucide-react";
 
+/** Stable fallback — zustand selectors must not return a fresh [] each call. */
+const EMPTY_CONNECTIONS: DeviceConnection[] = [];
+
 export function PropertiesPanel({ className = "" }: { className?: string }) {
   const sheet = useProjectStore(selectActiveSheet);
   const selected = useProjectStore((s) => s.selectedMarkupIds);
@@ -2735,7 +2738,9 @@ function SystemConfigSection({
   const updateDeviceSystemConfigs = useProjectStore((s) => s.updateDeviceSystemConfigs);
   const setHintedMarkups = useProjectStore((s) => s.setHintedMarkups);
   const setSelected = useProjectStore((s) => s.setSelected);
-  const connections = useProjectStore((s) => s.project?.connections ?? []);
+  const connections = useProjectStore(
+    (s) => s.project?.connections ?? EMPTY_CONNECTIONS,
+  );
   const project = useProjectStore((s) => s.project);
   const [open, setOpen] = useState(false);
   const [autoStartIp, setAutoStartIp] = useState("");

@@ -90,8 +90,8 @@ export function Workspace() {
               onTogglePalette={() => setMobilePaletteOpen((v) => !v)}
             />
           </div>
-          <PropertiesPanel className="!hidden md:!flex" />
-          {bidOpen && <BidPanel className="!hidden md:!flex" />}
+          {!isMobile && <PropertiesPanel />}
+          {!isMobile && bidOpen && <BidPanel />}
           {mobileDrawer === "project" && (
             <MobileSheet title="Project" onClose={() => setMobileDrawer(null)}>
               <LeftRail className="!h-full !w-full border-r-0" />

@@ -15,8 +15,9 @@ interface Props {
   onMouseDown?: (e: any) => void;
   onMouseEnter?: (e: any) => void;
   onMouseLeave?: (e: any) => void;
-  onTouchStart?: (e: any) => void;
+  onTap?: (e: any) => void;
   onClick?: (e: any) => void;
+  dragDistance?: number;
   draggable?: boolean;
   onDragStart?: (e: any) => void;
   onDragMove?: (e: any) => void;
@@ -40,8 +41,9 @@ export function DeviceIconNode({
   onMouseDown,
   onMouseEnter,
   onMouseLeave,
-  onTouchStart,
+  onTap,
   onClick,
+  dragDistance,
   draggable,
   onDragStart,
   onDragMove,
@@ -60,9 +62,9 @@ export function DeviceIconNode({
       onMouseDown={onMouseDown}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
-      onTouchStart={onTouchStart}
       onClick={onClick}
-      onTap={onClick}
+      onTap={onTap ?? onClick}
+      dragDistance={dragDistance}
       draggable={draggable}
       onDragStart={onDragStart}
       onDragMove={onDragMove}
@@ -95,7 +97,7 @@ export function DeviceIconNode({
           listening={false}
         />
       )}
-      {/* Background disc */}
+      {/* Background disc (visual only — grab hit target is the topmost circle). */}
       <Circle
         x={0}
         y={0}
@@ -106,6 +108,8 @@ export function DeviceIconNode({
         shadowColor={hoverActive ? color : undefined}
         shadowBlur={hoverActive ? 5 : 0}
         shadowOpacity={hoverActive ? 0.3 : 0}
+        listening={false}
+        perfectDrawEnabled={false}
       />
       <Circle x={0} y={0} radius={half - 1.5} fill={fillSoft} listening={false} />
       {/* Centered icon path group */}
@@ -132,6 +136,21 @@ export function DeviceIconNode({
           );
         })}
       </Group>
+      {/* Dedicated grab target. Geometry hitFunc avoids Brave/Konva hit-canvas
+          misses on shadowed discs and listening=false pass-through stacks. */}
+      <Circle
+        x={0}
+        y={0}
+        radius={half + 2}
+        fill="rgba(11,18,32,0.01)"
+        perfectDrawEnabled={false}
+        hitFunc={(ctx, shape) => {
+          ctx.beginPath();
+          ctx.arc(0, 0, half + 2, 0, Math.PI * 2, false);
+          ctx.closePath();
+          ctx.fillStrokeShape(shape);
+        }}
+      />
     </Group>
   );
 }
