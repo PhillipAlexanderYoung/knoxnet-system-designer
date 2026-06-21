@@ -74,6 +74,7 @@ type ShowHoverHint = (
   options?: { duringDrag?: boolean; immediate?: boolean },
 ) => void;
 type MarkupRenderPart = "body" | "tag";
+type DeviceHoverActionPlacement = "icon" | "tag" | "bubble";
 
 const HOVER_SHADOW_OPACITY = 0.32;
 const HOVER_HINT_DELAY_MS = 120;
@@ -414,6 +415,7 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
             hinted={isHinted}
             validationHighlighted={isValidationHighlighted}
             draggable={draggable}
+            canOpenProperties={shouldOpenDeviceProperties(m, activeTool, freehandErasing)}
             onMarkupClick={handleMarkupClick}
             onMarkupOpenProperties={handleMarkupOpenProperties}
             updateMarkup={updateMarkup}
@@ -468,6 +470,7 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
               hinted={isHinted}
               validationHighlighted={isValidationHighlighted}
               draggable={draggable}
+              canOpenProperties={shouldOpenDeviceProperties(m, activeTool, freehandErasing)}
               onMarkupClick={handleMarkupClick}
               onMarkupOpenProperties={handleMarkupOpenProperties}
               updateMarkup={updateMarkup}
@@ -513,6 +516,7 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
               hinted={isHinted}
               validationHighlighted={isValidationHighlighted}
               draggable={draggable}
+              canOpenProperties={shouldOpenDeviceProperties(m, activeTool, freehandErasing)}
               onMarkupClick={handleMarkupClick}
               onMarkupOpenProperties={handleMarkupOpenProperties}
               updateMarkup={updateMarkup}
@@ -555,6 +559,7 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
               hinted={isHinted}
               validationHighlighted={true}
               draggable={draggable}
+              canOpenProperties={shouldOpenDeviceProperties(m, activeTool, freehandErasing)}
               onMarkupClick={handleMarkupClick}
               onMarkupOpenProperties={handleMarkupOpenProperties}
               updateMarkup={updateMarkup}
@@ -618,6 +623,7 @@ const MarkupNode = memo(function MarkupNode({
   hinted,
   validationHighlighted,
   draggable,
+  canOpenProperties,
   onMarkupClick,
   onMarkupOpenProperties,
   updateMarkup,
@@ -641,6 +647,7 @@ const MarkupNode = memo(function MarkupNode({
   hinted: boolean;
   validationHighlighted: boolean;
   draggable: boolean;
+  canOpenProperties: boolean;
   onMarkupClick: (m: Markup, e: any) => void;
   onMarkupOpenProperties: (m: Markup, e: any) => void;
   updateMarkup: ReturnType<typeof useProjectStore.getState>["updateMarkup"];
@@ -710,6 +717,7 @@ const MarkupNode = memo(function MarkupNode({
         sheetMarkups ?? [],
         selected,
         draggable,
+        canOpenProperties,
         (hovered && !dragging) || hinted,
         validationHighlighted,
         handleClick,
@@ -739,6 +747,7 @@ function renderMarkup(
   sheetMarkups: Markup[],
   selected: boolean,
   draggable: boolean,
+  canOpenProperties: boolean,
   hovered: boolean,
   validationHighlighted: boolean,
   onClick: (e: any) => void,
@@ -1037,6 +1046,20 @@ function renderMarkup(
               listening={false}
               perfectDrawEnabled={false}
             />
+            {touchScale <= 1 && hovered && canOpenProperties && (
+              <DeviceHoverActions
+                x={radius + 4}
+                y={-radius - 17}
+                color={color}
+                placement="bubble"
+                onOpenProperties={onOpenProperties}
+                showHoverHint={showHoverHint}
+                hideHoverHint={hideHoverHint}
+                targetKey={`${m.id}:racked-properties`}
+                hintX={bubble.x + radius + 33}
+                hintY={bubble.y - radius - 22}
+              />
+            )}
           </Group>
         );
       }
@@ -1191,6 +1214,20 @@ function renderMarkup(
                   </Group>
                 </>
               )}
+              {touchScale <= 1 && hovered && canOpenProperties && (
+                <DeviceHoverActions
+                  x={m.x + size / 2 + 6}
+                  y={m.y - size / 2 - 22}
+                  color={color}
+                  placement="icon"
+                  onOpenProperties={onOpenProperties}
+                  showHoverHint={showHoverHint}
+                  hideHoverHint={hideHoverHint}
+                  targetKey={`${m.id}:device-properties`}
+                  hintX={m.x + size / 2 + 44}
+                  hintY={m.y - size / 2 - 23}
+                />
+              )}
             </>
           )}
           {renderPart === "tag" && (
@@ -1313,6 +1350,20 @@ function renderMarkup(
                     ctx.fillStrokeShape(shape);
                   }}
                 />
+                {touchScale <= 1 && hovered && canOpenProperties && (
+                  <DeviceHoverActions
+                    x={pillW + 5}
+                    y={-17}
+                    color={color}
+                    placement="tag"
+                    onOpenProperties={onOpenProperties}
+                    showHoverHint={showHoverHint}
+                    hideHoverHint={hideHoverHint}
+                    targetKey={`${m.id}:tag-properties`}
+                    hintX={pillLeft + pillW + 41}
+                    hintY={pillTop - 18}
+                  />
+                )}
               </Group>
             </>
           )}
@@ -1978,6 +2029,126 @@ function HoverHintLabel({ hint }: { hint: HoverHint }) {
       />
     </Label>
   );
+}
+
+function DeviceHoverActions({
+  x,
+  y,
+  color,
+  placement,
+  onOpenProperties,
+  showHoverHint,
+  hideHoverHint,
+  targetKey,
+  hintX,
+  hintY,
+}: {
+  x: number;
+  y: number;
+  color: string;
+  placement: DeviceHoverActionPlacement;
+  onOpenProperties: (e: any) => void;
+  showHoverHint: ShowHoverHint;
+  hideHoverHint: () => void;
+  targetKey: string;
+  hintX: number;
+  hintY: number;
+}) {
+  const bridge = hoverActionBridgeFor(placement);
+  const blockStageAndOpen = (e: any) => {
+    e.cancelBubble = true;
+    e.evt?.preventDefault?.();
+    e.evt?.stopPropagation?.();
+    onOpenProperties(e);
+  };
+  const blockStage = (e: any) => {
+    e.cancelBubble = true;
+    e.evt?.stopPropagation?.();
+  };
+  return (
+    <Group
+      x={x}
+      y={y}
+      onMouseDown={blockStage}
+      onClick={blockStageAndOpen}
+      onTap={blockStageAndOpen}
+      onMouseEnter={(e) => {
+        showHoverHint(
+          {
+            text: "open properties",
+            x: hintX,
+            y: hintY,
+            targetKey,
+          },
+          { immediate: true },
+        );
+        setStageCursor(e, "pointer");
+      }}
+      onMouseLeave={(e) => {
+        hideHoverHint();
+        setStageCursor(e, "");
+      }}
+    >
+      <Rect
+        x={bridge.x}
+        y={bridge.y}
+        width={bridge.width}
+        height={bridge.height}
+        fill="rgba(11,18,32,0.01)"
+        perfectDrawEnabled={false}
+      />
+      <Rect
+        x={0}
+        y={0}
+        width={36}
+        height={15}
+        cornerRadius={7.5}
+        fill="#0B1220"
+        stroke={color}
+        strokeWidth={0.8}
+        opacity={0.96}
+        shadowColor={color}
+        shadowBlur={5}
+        shadowOpacity={0.3}
+        perfectDrawEnabled={false}
+      />
+      <Circle x={7.5} y={7.5} radius={5.2} fill={color + "33"} listening={false} />
+      <Path
+        x={2.2}
+        y={2.1}
+        scaleX={0.45}
+        scaleY={0.45}
+        data="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"
+        stroke={color}
+        strokeWidth={2}
+        lineCap="round"
+        listening={false}
+      />
+      <Text
+        x={15}
+        y={4.7}
+        text="EDIT"
+        fontFamily="JetBrains Mono"
+        fontStyle="700"
+        fontSize={5.2}
+        fill="#F5F7FA"
+        listening={false}
+        perfectDrawEnabled={false}
+      />
+    </Group>
+  );
+}
+
+function hoverActionBridgeFor(placement: DeviceHoverActionPlacement) {
+  switch (placement) {
+    case "tag":
+      return { x: -6, y: -5, width: 48, height: 25 };
+    case "bubble":
+      return { x: -8, y: -4, width: 50, height: 25 };
+    case "icon":
+    default:
+      return { x: -8, y: 0, width: 50, height: 36 };
+  }
 }
 
 function boundsOfFlatPoints(points: number[]) {
