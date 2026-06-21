@@ -74,7 +74,7 @@ type ShowHoverHint = (
   options?: { duringDrag?: boolean; immediate?: boolean },
 ) => void;
 type MarkupRenderPart = "body" | "tag";
-type DeviceHoverActionPlacement = "icon" | "tag" | "bubble";
+type DeviceHoverActionPlacement = "icon" | "bubble";
 
 const HOVER_SHADOW_OPACITY = 0.32;
 const HOVER_HINT_DELAY_MS = 120;
@@ -1049,15 +1049,15 @@ function renderMarkup(
             {touchScale <= 1 && hovered && canOpenProperties && (
               <DeviceHoverActions
                 x={radius + 4}
-                y={-radius - 17}
+                y={-radius - 15}
                 color={color}
                 placement="bubble"
                 onOpenProperties={onOpenProperties}
                 showHoverHint={showHoverHint}
                 hideHoverHint={hideHoverHint}
                 targetKey={`${m.id}:racked-properties`}
-                hintX={bubble.x + radius + 33}
-                hintY={bubble.y - radius - 22}
+                hintX={bubble.x + radius + 29}
+                hintY={bubble.y - radius - 20}
               />
             )}
           </Group>
@@ -1216,16 +1216,16 @@ function renderMarkup(
               )}
               {touchScale <= 1 && hovered && canOpenProperties && (
                 <DeviceHoverActions
-                  x={m.x + size / 2 + 6}
-                  y={m.y - size / 2 - 22}
+                  x={m.x + size / 2 + 5}
+                  y={m.y - size / 2 - 19}
                   color={color}
                   placement="icon"
                   onOpenProperties={onOpenProperties}
                   showHoverHint={showHoverHint}
                   hideHoverHint={hideHoverHint}
                   targetKey={`${m.id}:device-properties`}
-                  hintX={m.x + size / 2 + 44}
-                  hintY={m.y - size / 2 - 23}
+                  hintX={m.x + size / 2 + 38}
+                  hintY={m.y - size / 2 - 20}
                 />
               )}
             </>
@@ -1350,20 +1350,6 @@ function renderMarkup(
                     ctx.fillStrokeShape(shape);
                   }}
                 />
-                {touchScale <= 1 && hovered && canOpenProperties && (
-                  <DeviceHoverActions
-                    x={pillW + 5}
-                    y={-17}
-                    color={color}
-                    placement="tag"
-                    onOpenProperties={onOpenProperties}
-                    showHoverHint={showHoverHint}
-                    hideHoverHint={hideHoverHint}
-                    targetKey={`${m.id}:tag-properties`}
-                    hintX={pillLeft + pillW + 41}
-                    hintY={pillTop - 18}
-                  />
-                )}
               </Group>
             </>
           )}
@@ -2100,24 +2086,24 @@ function DeviceHoverActions({
       <Rect
         x={0}
         y={0}
-        width={36}
-        height={15}
-        cornerRadius={7.5}
+        width={28}
+        height={13}
+        cornerRadius={6.5}
         fill="#0B1220"
         stroke={color}
-        strokeWidth={0.8}
-        opacity={0.96}
+        strokeWidth={0.7}
+        opacity={0.94}
         shadowColor={color}
-        shadowBlur={5}
-        shadowOpacity={0.3}
+        shadowBlur={4}
+        shadowOpacity={0.26}
         perfectDrawEnabled={false}
       />
-      <Circle x={7.5} y={7.5} radius={5.2} fill={color + "33"} listening={false} />
+      <Circle x={6.5} y={6.5} radius={4.4} fill={color + "33"} listening={false} />
       <Path
-        x={2.2}
-        y={2.1}
-        scaleX={0.45}
-        scaleY={0.45}
+        x={2.3}
+        y={2.2}
+        scaleX={0.36}
+        scaleY={0.36}
         data="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"
         stroke={color}
         strokeWidth={2}
@@ -2125,12 +2111,12 @@ function DeviceHoverActions({
         listening={false}
       />
       <Text
-        x={15}
-        y={4.7}
+        x={13}
+        y={4.25}
         text="EDIT"
         fontFamily="JetBrains Mono"
         fontStyle="700"
-        fontSize={5.2}
+        fontSize={4.5}
         fill="#F5F7FA"
         listening={false}
         perfectDrawEnabled={false}
@@ -2141,13 +2127,11 @@ function DeviceHoverActions({
 
 function hoverActionBridgeFor(placement: DeviceHoverActionPlacement) {
   switch (placement) {
-    case "tag":
-      return { x: -6, y: -5, width: 48, height: 25 };
     case "bubble":
-      return { x: -8, y: -4, width: 50, height: 25 };
+      return { x: -6, y: -4, width: 40, height: 23 };
     case "icon":
     default:
-      return { x: -8, y: 0, width: 50, height: 36 };
+      return { x: -7, y: -1, width: 42, height: 32 };
   }
 }
 
