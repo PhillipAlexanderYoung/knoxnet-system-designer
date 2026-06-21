@@ -1,6 +1,5 @@
 import { useMemo } from "react";
 import { useProjectStore, selectActiveSheet, type Markup } from "../store/projectStore";
-import { devicesById } from "../data/devices";
 import { endpointFromMarkup, isRouteInfrastructureMarkup } from "../lib/cableRuns";
 import { Trash2, Copy, Lock, LockOpen, Cable } from "lucide-react";
 
@@ -16,8 +15,7 @@ export function SelectionActionBar() {
   const updateMarkup = useProjectStore((s) => s.updateMarkup);
   const deleteMarkup = useProjectStore((s) => s.deleteMarkup);
   const setSelected = useProjectStore((s) => s.setSelected);
-  const addMarkup = useProjectStore((s) => s.addMarkup);
-  const nextTag = useProjectStore((s) => s.nextTag);
+  const duplicateSelectedMarkups = useProjectStore((s) => s.duplicateSelectedMarkups);
   const cableRunDraft = useProjectStore((s) => s.cableRunDraft);
   const setActiveTool = useProjectStore((s) => s.setActiveTool);
   const placeCableRunEndpoint = useProjectStore((s) => s.placeCableRunEndpoint);
@@ -49,24 +47,7 @@ export function SelectionActionBar() {
     (lockHintTargetsSelected ||
       (!lockMoveHint.targetIds?.length && items.some((m) => m.locked)));
 
-  const onDuplicate = () => {
-    const newIds: string[] = [];
-    for (const m of items) {
-      if (m.kind !== "device") continue;
-      const dev = devicesById[m.deviceId];
-      const id = Math.random().toString(36).slice(2, 10);
-      const tag = nextTag(dev?.shortCode ?? "X");
-      addMarkup({
-        ...m,
-        id,
-        tag,
-        x: m.x + 24,
-        y: m.y + 24,
-      });
-      newIds.push(id);
-    }
-    if (newIds.length > 0) setSelected(newIds);
-  };
+  const onDuplicate = () => duplicateSelectedMarkups();
 
   const onDelete = () => {
     items.forEach((m) => deleteMarkup(m.id));

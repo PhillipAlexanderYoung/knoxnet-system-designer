@@ -69,6 +69,32 @@ export function withDefaultNetworkConfig(markup: DeviceMarkup, project: Project)
   return withNetworkDefaults(markup, { ipAddress });
 }
 
+export function nextAvailableHostname(project: Project, baseHostname: string, excludeIds = new Set<string>()): string {
+  const base = hostnameForTag(baseHostname) || "device";
+  const used = projectHostnameSet(project, excludeIds);
+  if (!used.has(base)) return base;
+
+  for (let i = 2; i < 10000; i += 1) {
+    const candidate = `${base}-${i}`;
+    if (!used.has(candidate)) return candidate;
+  }
+  return `${base}-${Date.now().toString(36)}`;
+}
+
+export function withDuplicateNetworkIdentity(markup: DeviceMarkup, project: Project): DeviceMarkup {
+  if (!isNetworkAddressableDevice(markup)) return markup;
+  const hostname = nextAvailableHostname(project, hostnameForTag(markup.tag), new Set([markup.id]));
+  return {
+    ...markup,
+    systemConfig: mergeDeviceConfig(markup, {
+      network: {
+        ...markup.systemConfig?.network,
+        hostname,
+      },
+    }),
+  };
+}
+
 export function connectedDevicesForSwitch(
   project: Project,
   switchDevice: DeviceMarkup,
@@ -289,6 +315,18 @@ function projectIpSet(project: Project, excludeDeviceId?: string, excludeIds = n
     }
   }
   return ips;
+}
+
+function projectHostnameSet(project: Project, excludeIds = new Set<string>()): Set<string> {
+  const hostnames = new Set<string>();
+  for (const sheet of project.sheets) {
+    for (const markup of sheet.markups) {
+      if (markup.kind !== "device" || excludeIds.has(markup.id)) continue;
+      const hostname = hostnameForTag(markup.systemConfig?.network?.hostname ?? "");
+      if (hostname) hostnames.add(hostname);
+    }
+  }
+  return hostnames;
 }
 
 function normalizeIp(value: string | undefined): string | undefined {

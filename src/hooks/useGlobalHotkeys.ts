@@ -1,6 +1,5 @@
 import { useEffect } from "react";
 import { useProjectStore, type ToolId, selectActiveSheet, type Markup } from "../store/projectStore";
-import { devicesById } from "../data/devices";
 
 const KEY_TO_TOOL: Record<string, ToolId> = {
   v: "select",
@@ -114,27 +113,7 @@ export function useGlobalHotkeys() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "d") {
         if (s.selectedMarkupIds.length === 0) return;
         e.preventDefault();
-        const sheet = selectActiveSheet(s);
-        if (!sheet) return;
-        const newIds: string[] = [];
-        for (const id of s.selectedMarkupIds) {
-          const m = sheet.markups.find((mm) => mm.id === id);
-          if (!m) continue;
-          if (m.kind === "device") {
-            const dev = devicesById[m.deviceId];
-            const newId = Math.random().toString(36).slice(2, 10);
-            const tag = s.nextTag(dev?.shortCode ?? "X");
-            s.addMarkup({
-              ...m,
-              id: newId,
-              tag,
-              x: m.x + 24,
-              y: m.y + 24,
-            });
-            newIds.push(newId);
-          }
-        }
-        if (newIds.length) s.setSelected(newIds);
+        s.duplicateSelectedMarkups();
       }
     };
     window.addEventListener("keydown", onKey);

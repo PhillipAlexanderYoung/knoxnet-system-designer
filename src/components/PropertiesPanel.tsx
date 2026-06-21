@@ -120,7 +120,7 @@ export function PropertiesPanel({ className = "" }: { className?: string }) {
   const updateProjectMeta = useProjectStore((s) => s.updateProjectMeta);
   const project = useProjectStore((s) => s.project);
   const addMarkup = useProjectStore((s) => s.addMarkup);
-  const nextTag = useProjectStore((s) => s.nextTag);
+  const duplicateSelectedMarkups = useProjectStore((s) => s.duplicateSelectedMarkups);
   const propertiesPanelFocusRequest = useProjectStore((s) => s.propertiesPanelFocusRequest);
   const panelRef = useRef<HTMLElement>(null);
 
@@ -149,25 +149,7 @@ export function PropertiesPanel({ className = "" }: { className?: string }) {
     [project, single],
   );
 
-  const onDuplicate = () => {
-    if (!sheet) return;
-    const newIds: string[] = [];
-    for (const m of selectedMarkups) {
-      if (m.kind !== "device") continue;
-      const dev = devicesById[m.deviceId];
-      const id = Math.random().toString(36).slice(2, 10);
-      const tag = nextTag(dev?.shortCode ?? "X");
-      addMarkup({
-        ...m,
-        id,
-        tag,
-        x: m.x + 24,
-        y: m.y + 24,
-      });
-      newIds.push(id);
-    }
-    if (newIds.length > 0) setSelected(newIds);
-  };
+  const onDuplicate = () => duplicateSelectedMarkups();
 
   return (
     <aside

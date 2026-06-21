@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
 import {
   devices as deviceCatalog,
+  devicesById,
   type DeviceCategory,
 } from "../data/devices";
 import { cables as cableCatalog } from "../data/cables";
@@ -61,6 +62,7 @@ import {
 import {
   buildAutoIpAssignmentPatches,
   isSwitchLikeDevice,
+  withDuplicateNetworkIdentity,
   withDefaultNetworkConfig,
 } from "../lib/networkConfig";
 import {
@@ -1387,6 +1389,7 @@ interface State {
   closePagePreview: () => void;
 
   addMarkup: (m: Markup) => void;
+  duplicateSelectedMarkups: () => string[];
   updateMarkup: (id: string, patch: Partial<Markup>) => void;
   moveDeviceMarkup: (id: string, x: number, y: number) => void;
   setAllDeviceMarkupsLocked: (locked: boolean) => number;
@@ -2857,6 +2860,55 @@ export const useProjectStore = create<State>()(
         };
       }),
 
+    duplicateSelectedMarkups: () => {
+      let duplicatedIds: string[] = [];
+      set((s) => {
+        if (!s.project || !s.activeSheetId || s.selectedMarkupIds.length === 0) return s;
+        const sheet = s.project.sheets.find((sh) => sh.id === s.activeSheetId);
+        if (!sheet) return s;
+
+        const selectedIds = new Set(s.selectedMarkupIds);
+        const nextMarkups = [...sheet.markups];
+        let workingProject = s.project;
+
+        for (const source of sheet.markups) {
+          if (!selectedIds.has(source.id) || source.kind !== "device") continue;
+          const dev = devicesById[source.deviceId];
+          const id = uid();
+          const tag = nextTagForMarkups(nextMarkups, dev?.shortCode ?? "X");
+          const rawDuplicate: DeviceMarkup = {
+            ...source,
+            id,
+            tag,
+            x: source.x + 24,
+            y: source.y + 24,
+          };
+          const withHostname = withDuplicateNetworkIdentity(rawDuplicate, workingProject);
+          const duplicate = withDefaultNetworkConfig(withHostname, workingProject);
+          nextMarkups.push(duplicate);
+          duplicatedIds.push(id);
+          workingProject = {
+            ...s.project,
+            sheets: s.project.sheets.map((sh) =>
+              sh.id === s.activeSheetId ? { ...sh, markups: nextMarkups } : sh,
+            ),
+          };
+        }
+
+        if (duplicatedIds.length === 0) return s;
+        return {
+          history: historyAfterProjectChange(s.history, s.project),
+          project: {
+            ...workingProject,
+            updatedAt: Date.now(),
+          },
+          selectedMarkupIds: duplicatedIds,
+          selectedBrand: null,
+        };
+      });
+      return duplicatedIds;
+    },
+
     updateMarkup: (id, patch) =>
       set((s) => {
         if (!s.project || !s.activeSheetId) return s;
@@ -3737,18 +3789,26 @@ export const useProjectStore = create<State>()(
       if (!s.project || !s.activeSheetId) return `${shortCode}-01`;
       const sheet = s.project.sheets.find((sh) => sh.id === s.activeSheetId);
       if (!sheet) return `${shortCode}-01`;
-      const re = new RegExp(`^${shortCode}-(\\d+)$`);
-      let max = 0;
-      for (const m of sheet.markups) {
-        if (m.kind === "device") {
-          const match = m.tag?.match(re);
-          if (match) max = Math.max(max, parseInt(match[1], 10));
-        }
-      }
-      return `${shortCode}-${String(max + 1).padStart(2, "0")}`;
+      return nextTagForMarkups(sheet.markups, shortCode);
     },
   })),
 );
+
+function nextTagForMarkups(markups: Markup[], shortCode: string): string {
+  const prefix = shortCode.trim() || "X";
+  const re = new RegExp(`^${escapeRegExp(prefix)}-(\\d+)$`);
+  let max = 0;
+  for (const m of markups) {
+    if (m.kind !== "device") continue;
+    const match = m.tag?.match(re);
+    if (match) max = Math.max(max, parseInt(match[1], 10));
+  }
+  return `${prefix}-${String(max + 1).padStart(2, "0")}`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 function cableRunEndpointKey(endpoint: CableRunEndpoint): string {
   return endpoint.deviceMarkupId ?? endpoint.deviceTag ?? `${endpoint.x}:${endpoint.y}`;
