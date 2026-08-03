@@ -120,8 +120,38 @@ export async function exportMarkupPdf(project: Project) {
           continue;
         }
         const src = await PDFDocument.load(bytes);
-        const [copied] = await out.copyPages(src, [0]);
-        out.addPage(copied);
+        const srcPage = src.getPages()[0];
+        const rotation = normalizeRotation(srcPage.getRotation().angle);
+        if (rotation === 0) {
+          const [copied] = await out.copyPages(src, [0]);
+          out.addPage(copied);
+        } else {
+          // The source page carries a /Rotate flag (common for sheets
+          // exported/scanned with a portrait MediaBox that's displayed
+          // landscape via rotation). pdf-lib's drawing primitives ignore
+          // /Rotate and place content in the page's *unrotated* default
+          // space, so naively copying the page and then drawing markups
+          // at sheet.pageWidth/pageHeight (the rotation-aware "visual"
+          // dimensions pdf.js reports, which is the coordinate frame
+          // every markup on this sheet was authored in) puts the two
+          // layers in different frames: the plan renders upright
+          // (its own content stream already accounts for /Rotate) while
+          // everything we draw on top comes out rotated 90/270°
+          // relative to it. Fix: bake the rotation into the embedded
+          // page via a transformation matrix and place it on a fresh,
+          // unrotated page sized to the visual dimensions, so the
+          // source art and our overlay finally share one coordinate
+          // frame.
+          const rawW = srcPage.getWidth();
+          const rawH = srcPage.getHeight();
+          const embedded = await out.embedPage(
+            srcPage,
+            undefined,
+            rotationCompensationMatrix(rotation, rawW, rawH),
+          );
+          const rotatedPage = out.addPage([sheet.pageWidth, sheet.pageHeight]);
+          rotatedPage.drawPage(embedded, { x: 0, y: 0 });
+        }
       } else {
         // Blank page sized to the sheet — markups + title block draw
         // over white. Catches DXF / SVG / raster / IFC / missing source.
@@ -608,6 +638,42 @@ async function drawCoverPage(
       font: fonts.bold,
       color: p.accent,
     });
+  }
+}
+
+export function normalizeRotation(angle: number): 0 | 90 | 180 | 270 {
+  const n = ((Math.round(angle / 90) * 90) % 360 + 360) % 360;
+  return n as 0 | 90 | 180 | 270;
+}
+
+/**
+ * Transformation matrix (pdf-lib `[a b c d e f]` convention) that maps a
+ * point in a page's raw, unrotated default space (`w` × `h`, the MediaBox
+ * dimensions) to where that point belongs in the *visually* rotated space
+ * (swapped to `h` × `w` for 90/270). Used to bake a source page's /Rotate
+ * into an embedded copy so it can be drawn onto a plain, unrotated page —
+ * see the call site in the sheet-copy loop above for why this is needed.
+ *
+ * Derived from "rotate the physical page clockwise by `rotation`
+ * degrees about its center, then re-anchor to the new bounding box":
+ *   90:  (x, y) -> (y, w - x)
+ *   180: (x, y) -> (w - x, h - y)
+ *   270: (x, y) -> (h - y, x)
+ */
+export function rotationCompensationMatrix(
+  rotation: 0 | 90 | 180 | 270,
+  w: number,
+  h: number,
+): [number, number, number, number, number, number] {
+  switch (rotation) {
+    case 90:
+      return [0, -1, 1, 0, 0, w];
+    case 180:
+      return [-1, 0, 0, -1, w, h];
+    case 270:
+      return [0, 1, -1, 0, h, 0];
+    default:
+      return [1, 0, 0, 1, 0, 0];
   }
 }
 
