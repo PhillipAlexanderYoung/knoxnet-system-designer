@@ -66,6 +66,12 @@ import { validateProject, validationMarkupIdsForIssues } from "../lib/validation
 import { scaleForTouch } from "../lib/touchControls";
 import { useTouchControlScale } from "../hooks/useTouchControlScale";
 import { shouldOpenDeviceProperties } from "../lib/deviceProperties";
+import {
+  DEVICE_HOVER_ACTION_SIZE,
+  DEVICE_HOVER_CLEAR_MS,
+  deviceHoverActionBridge,
+  deviceHoverActionPosition,
+} from "../lib/deviceHoverActions";
 
 type TagSettings = Pick<Project, "tagDefaults" | "branding"> | null;
 type HoverHint = { text: string; x: number; y: number; targetKey: string; fading?: boolean };
@@ -74,7 +80,6 @@ type ShowHoverHint = (
   options?: { duringDrag?: boolean; immediate?: boolean },
 ) => void;
 type MarkupRenderPart = "body" | "tag";
-type DeviceHoverActionPlacement = "icon" | "bubble";
 
 const HOVER_SHADOW_OPACITY = 0.32;
 const HOVER_HINT_DELAY_MS = 120;
@@ -118,6 +123,38 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
   const [hoveredMarkupId, setHoveredMarkupId] = useState<string | null>(null);
   const [hint, setHint] = useState<HoverHint | null>(null);
   const hintDelayTimerRef = useRef<number | null>(null);
+  const hoverClearTimerRef = useRef<number | null>(null);
+  const setHoveredMarkupIdSoon = useCallback(
+    (id: string | null, options?: { immediate?: boolean }) => {
+      if (hoverClearTimerRef.current !== null) {
+        window.clearTimeout(hoverClearTimerRef.current);
+        hoverClearTimerRef.current = null;
+      }
+      if (id) {
+        setHoveredMarkupId(id);
+        return;
+      }
+      if (options?.immediate) {
+        setHoveredMarkupId(null);
+        return;
+      }
+      // Grace period so the pointer can travel from the device onto the
+      // top-layer edit chip without the chip unmounting underneath it.
+      hoverClearTimerRef.current = window.setTimeout(() => {
+        hoverClearTimerRef.current = null;
+        setHoveredMarkupId(null);
+      }, DEVICE_HOVER_CLEAR_MS);
+    },
+    [],
+  );
+  useEffect(
+    () => () => {
+      if (hoverClearTimerRef.current !== null) {
+        window.clearTimeout(hoverClearTimerRef.current);
+      }
+    },
+    [],
+  );
   const hintFadeTimerRef = useRef<number | null>(null);
   const hintHideTimerRef = useRef<number | null>(null);
   const activeHintTargetRef = useRef<string | null>(null);
@@ -425,7 +462,8 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
             tagSettings={tagSettings}
             runLabelLayout={m.kind === "cable" ? runLabelLayouts.get(m.id) : undefined}
             renderPart="body"
-            onHoverChange={setHoveredMarkupId}
+            onHoverChange={setHoveredMarkupIdSoon}
+            layerHovered={hoveredMarkupId === m.id}
             showHoverHint={showHoverHint}
             hideHoverHint={hideHoverHint}
             touchScale={touchScale}
@@ -479,7 +517,8 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
               lockedMoveHintMessage={lockedMoveHintMessage}
               tagSettings={tagSettings}
               renderPart="tag"
-              onHoverChange={setHoveredMarkupId}
+              onHoverChange={setHoveredMarkupIdSoon}
+              layerHovered={hoveredMarkupId === m.id}
               showHoverHint={showHoverHint}
               hideHoverHint={hideHoverHint}
               touchScale={touchScale}
@@ -525,7 +564,8 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
               lockedMoveHintMessage={lockedMoveHintMessage}
               tagSettings={tagSettings}
               renderPart="body"
-              onHoverChange={setHoveredMarkupId}
+              onHoverChange={setHoveredMarkupIdSoon}
+              layerHovered={hoveredMarkupId === m.id}
               showHoverHint={showHoverHint}
               hideHoverHint={hideHoverHint}
               touchScale={touchScale}
@@ -569,7 +609,8 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
               tagSettings={tagSettings}
               runLabelLayout={runLabelLayouts.get(m.id)}
               renderPart="body"
-              onHoverChange={setHoveredMarkupId}
+              onHoverChange={setHoveredMarkupIdSoon}
+              layerHovered={hoveredMarkupId === m.id}
               showHoverHint={showHoverHint}
               hideHoverHint={hideHoverHint}
               touchScale={touchScale}
@@ -577,6 +618,52 @@ export const MarkupLayer = memo(function MarkupLayer({ sheet }: { sheet: Sheet }
           );
         })}
       </Group>
+      {/* Edit chip sits above tags/overlays so neighboring labels can't steal the hit target. */}
+      {touchScale <= 1 &&
+        hoveredMarkupId &&
+        (() => {
+          const hovered = sheet.markups.find(
+            (m): m is DeviceMarkup => m.kind === "device" && m.id === hoveredMarkupId,
+          );
+          if (!hovered || hovered.hidden) return null;
+          if (isMarkupLayerOff(hovered)) return null;
+          if (!shouldOpenDeviceProperties(hovered, activeTool, freehandErasing)) return null;
+          const dev = devicesById[hovered.deviceId];
+          if (!dev) return null;
+          const color = hovered.colorOverride ?? categoryColor[dev.category] ?? "#94A0B8";
+          const nestedParent = hovered.parentId
+            ? sheet.markups.find(
+                (candidate): candidate is DeviceMarkup =>
+                  candidate.kind === "device" && candidate.id === hovered.parentId,
+              )
+            : null;
+          let anchorX = hovered.x;
+          let anchorY = hovered.y;
+          let radius = (hovered.size ?? 28) / 2;
+          if (nestedParent) {
+            const bubble = nestedBubblePoint(sheet.markups, nestedParent, hovered);
+            const bubbleSize = Math.max(8, nestedBubbleSize(hovered) - 2);
+            anchorX = bubble.x;
+            anchorY = bubble.y;
+            radius = bubbleSize / 2;
+          }
+          const pos = deviceHoverActionPosition(anchorX, anchorY, radius);
+          return (
+            <DeviceHoverActions
+              x={pos.x}
+              y={pos.y}
+              color={color}
+              onOpenProperties={(e) => handleMarkupOpenProperties(hovered, e)}
+              showHoverHint={showHoverHint}
+              hideHoverHint={hideHoverHint}
+              targetKey={`${hovered.id}:device-properties`}
+              hintX={pos.x + DEVICE_HOVER_ACTION_SIZE + 4}
+              hintY={pos.y - 2}
+              onHoverRetain={() => setHoveredMarkupIdSoon(hovered.id)}
+              onHoverRelease={() => setHoveredMarkupIdSoon(null)}
+            />
+          );
+        })()}
       {hint && (
         <Group listening={false}>
           <HoverHintLabel hint={hint} />
@@ -634,6 +721,7 @@ const MarkupNode = memo(function MarkupNode({
   runLabelLayout,
   renderPart,
   onHoverChange,
+  layerHovered = false,
   showHoverHint,
   hideHoverHint,
   touchScale,
@@ -657,7 +745,9 @@ const MarkupNode = memo(function MarkupNode({
   tagSettings: TagSettings;
   runLabelLayout?: RunLabelLayout;
   renderPart: MarkupRenderPart;
-  onHoverChange: (id: string | null) => void;
+  onHoverChange: (id: string | null, options?: { immediate?: boolean }) => void;
+  /** True while the top-layer edit chip is retaining hover for this markup. */
+  layerHovered?: boolean;
   showHoverHint: ShowHoverHint;
   hideHoverHint: () => void;
   touchScale: number;
@@ -696,16 +786,17 @@ const MarkupNode = memo(function MarkupNode({
   const clearHoverForDrag = useCallback((e: any) => {
     setDragging(true);
     setHovered(false);
-    onHoverChange(null);
+    onHoverChange(null, { immediate: true });
     hideHoverHint();
     setStageCursor(e, "grabbing");
   }, [hideHoverHint, onHoverChange]);
   const finishHoverDrag = useCallback((e: any) => {
     setDragging(false);
     setHovered(false);
+    onHoverChange(null, { immediate: true });
     hideHoverHint();
     setStageCursor(e, "");
-  }, [hideHoverHint]);
+  }, [hideHoverHint, onHoverChange]);
 
   return (
     <Group onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
@@ -718,7 +809,7 @@ const MarkupNode = memo(function MarkupNode({
         selected,
         draggable,
         canOpenProperties,
-        (hovered && !dragging) || hinted,
+        ((hovered || layerHovered) && !dragging) || hinted,
         validationHighlighted,
         handleClick,
         handleOpenProperties,
@@ -747,7 +838,7 @@ function renderMarkup(
   sheetMarkups: Markup[],
   selected: boolean,
   draggable: boolean,
-  canOpenProperties: boolean,
+  _canOpenProperties: boolean,
   hovered: boolean,
   validationHighlighted: boolean,
   onClick: (e: any) => void,
@@ -1046,20 +1137,6 @@ function renderMarkup(
               listening={false}
               perfectDrawEnabled={false}
             />
-            {touchScale <= 1 && hovered && canOpenProperties && (
-              <DeviceHoverActions
-                x={radius + 4}
-                y={-radius - 15}
-                color={color}
-                placement="bubble"
-                onOpenProperties={onOpenProperties}
-                showHoverHint={showHoverHint}
-                hideHoverHint={hideHoverHint}
-                targetKey={`${m.id}:racked-properties`}
-                hintX={bubble.x + radius + 29}
-                hintY={bubble.y - radius - 20}
-              />
-            )}
           </Group>
         );
       }
@@ -1213,20 +1290,6 @@ function renderMarkup(
                     />
                   </Group>
                 </>
-              )}
-              {touchScale <= 1 && hovered && canOpenProperties && (
-                <DeviceHoverActions
-                  x={m.x + size / 2 + 5}
-                  y={m.y - size / 2 - 19}
-                  color={color}
-                  placement="icon"
-                  onOpenProperties={onOpenProperties}
-                  showHoverHint={showHoverHint}
-                  hideHoverHint={hideHoverHint}
-                  targetKey={`${m.id}:device-properties`}
-                  hintX={m.x + size / 2 + 38}
-                  hintY={m.y - size / 2 - 20}
-                />
               )}
             </>
           )}
@@ -2021,26 +2084,29 @@ function DeviceHoverActions({
   x,
   y,
   color,
-  placement,
   onOpenProperties,
   showHoverHint,
   hideHoverHint,
   targetKey,
   hintX,
   hintY,
+  onHoverRetain,
+  onHoverRelease,
 }: {
   x: number;
   y: number;
   color: string;
-  placement: DeviceHoverActionPlacement;
   onOpenProperties: (e: any) => void;
   showHoverHint: ShowHoverHint;
   hideHoverHint: () => void;
   targetKey: string;
   hintX: number;
   hintY: number;
+  onHoverRetain: () => void;
+  onHoverRelease: () => void;
 }) {
-  const bridge = hoverActionBridgeFor(placement);
+  const size = DEVICE_HOVER_ACTION_SIZE;
+  const bridge = deviceHoverActionBridge();
   const blockStageAndOpen = (e: any) => {
     e.cancelBubble = true;
     e.evt?.preventDefault?.();
@@ -2059,9 +2125,10 @@ function DeviceHoverActions({
       onClick={blockStageAndOpen}
       onTap={blockStageAndOpen}
       onMouseEnter={(e) => {
+        onHoverRetain();
         showHoverHint(
           {
-            text: "open properties",
+            text: "settings",
             x: hintX,
             y: hintY,
             targetKey,
@@ -2071,10 +2138,12 @@ function DeviceHoverActions({
         setStageCursor(e, "pointer");
       }}
       onMouseLeave={(e) => {
+        onHoverRelease();
         hideHoverHint();
         setStageCursor(e, "");
       }}
     >
+      {/* Invisible hit + bridge only — no chip chrome, just the gear. */}
       <Rect
         x={bridge.x}
         y={bridge.y}
@@ -2086,53 +2155,25 @@ function DeviceHoverActions({
       <Rect
         x={0}
         y={0}
-        width={28}
-        height={13}
-        cornerRadius={6.5}
-        fill="#0B1220"
-        stroke={color}
-        strokeWidth={0.7}
-        opacity={0.94}
-        shadowColor={color}
-        shadowBlur={4}
-        shadowOpacity={0.26}
+        width={size}
+        height={size}
+        fill="rgba(11,18,32,0.01)"
         perfectDrawEnabled={false}
       />
-      <Circle x={6.5} y={6.5} radius={4.4} fill={color + "33"} listening={false} />
       <Path
-        x={2.3}
-        y={2.2}
-        scaleX={0.36}
-        scaleY={0.36}
-        data="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"
-        stroke={color}
-        strokeWidth={2}
-        lineCap="round"
+        x={0}
+        y={0}
+        scaleX={size / 24}
+        scaleY={size / 24}
+        data="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z M19.4 13a7.7 7.7 0 0 0 .05-1l2.05-1.6-2-3.45-2.45.95a7.6 7.6 0 0 0-1.75-1L15 4h-4l-.3 2.9a7.6 7.6 0 0 0-1.75 1L6.5 6.95l-2 3.45L6.55 12a7.7 7.7 0 0 0 0 2l-2.05 1.6 2 3.45 2.45-.95a7.6 7.6 0 0 0 1.75 1L11 22h4l.3-2.9a7.6 7.6 0 0 0 1.75-1l2.45.95 2-3.45L19.4 13z"
+        fill={color}
+        shadowColor="#0B1220"
+        shadowBlur={2}
+        shadowOpacity={0.85}
         listening={false}
-      />
-      <Text
-        x={13}
-        y={4.25}
-        text="EDIT"
-        fontFamily="JetBrains Mono"
-        fontStyle="700"
-        fontSize={4.5}
-        fill="#F5F7FA"
-        listening={false}
-        perfectDrawEnabled={false}
       />
     </Group>
   );
-}
-
-function hoverActionBridgeFor(placement: DeviceHoverActionPlacement) {
-  switch (placement) {
-    case "bubble":
-      return { x: -6, y: -4, width: 40, height: 23 };
-    case "icon":
-    default:
-      return { x: -7, y: -1, width: 42, height: 32 };
-  }
 }
 
 function boundsOfFlatPoints(points: number[]) {
