@@ -61,6 +61,7 @@ import {
 } from "../lib/canvasViewport";
 import {
   buildAutoIpAssignmentPatches,
+  findSwitchForNetworkDevices,
   isSwitchLikeDevice,
   withDuplicateNetworkIdentity,
   withDefaultNetworkConfig,
@@ -1216,6 +1217,12 @@ interface State {
   hintedMarkupIds: string[];
   validationHighlightMarkupIds: string[];
   validationIssueMode: boolean;
+  /**
+   * Focus the switch Connected Devices (IP schema) UI on these device
+   * markup ids. Bumped `requestId` retriggers open/scroll even if the
+   * device set is unchanged.
+   */
+  ipSchemaFocus: { requestId: number; switchId: string; deviceIds: string[] } | null;
   /** Which branding element (if any) is currently selected for drag/resize
    *  on the canvas. Mutually exclusive with `selectedMarkupIds` — selecting
    *  a markup clears this and vice versa. */
@@ -1407,6 +1414,9 @@ interface State {
   setValidationHighlights: (ids: string[]) => void;
   clearValidationHighlights: () => void;
   setValidationIssueMode: (enabled: boolean) => void;
+  /** Open the switch IP schema (Connected Devices) for conflicted devices. */
+  reviewNetworkConflictsInIpSchema: (deviceIds: string[]) => boolean;
+  clearIpSchemaFocus: () => void;
 
   toggleLayer: (id: LayerId) => void;
   setLayerLocked: (id: LayerId, locked: boolean) => void;
@@ -1632,6 +1642,7 @@ export const useProjectStore = create<State>()(
     hintedMarkupIds: [],
     validationHighlightMarkupIds: [],
     validationIssueMode: false,
+    ipSchemaFocus: null,
     selectedBrand: null,
     layers: DEFAULT_LAYERS.map((l) => ({ ...l })),
     cursor: null,
@@ -1676,6 +1687,7 @@ export const useProjectStore = create<State>()(
         selectedMarkupIds: [],
         validationHighlightMarkupIds: [],
         validationIssueMode: false,
+        ipSchemaFocus: null,
         cableRunDraft: null,
         cableRunBulkBranch: null,
         lockMoveHint: null,
@@ -1706,6 +1718,7 @@ export const useProjectStore = create<State>()(
         selectedMarkupIds: [],
         validationHighlightMarkupIds: [],
         validationIssueMode: false,
+        ipSchemaFocus: null,
         cableRunDraft: null,
         cableRunBulkBranch: null,
         lockMoveHint: null,
@@ -1735,6 +1748,7 @@ export const useProjectStore = create<State>()(
           selectedMarkupIds: [],
           validationHighlightMarkupIds: [],
           validationIssueMode: false,
+          ipSchemaFocus: null,
         };
       }),
 
@@ -1758,6 +1772,7 @@ export const useProjectStore = create<State>()(
           selectedMarkupIds: [],
           validationHighlightMarkupIds: [],
           validationIssueMode: false,
+          ipSchemaFocus: null,
         };
       }),
 
@@ -2888,8 +2903,8 @@ export const useProjectStore = create<State>()(
           nextMarkups.push(duplicate);
           duplicatedIds.push(id);
           workingProject = {
-            ...s.project,
-            sheets: s.project.sheets.map((sh) =>
+            ...workingProject,
+            sheets: workingProject.sheets.map((sh) =>
               sh.id === s.activeSheetId ? { ...sh, markups: nextMarkups } : sh,
             ),
           };
@@ -3207,11 +3222,55 @@ export const useProjectStore = create<State>()(
     setHintedMarkup: (id) => set({ hintedMarkupId: id, hintedMarkupIds: id ? [id] : [] }),
     setHintedMarkups: (ids) =>
       set({ hintedMarkupId: ids[0] ?? null, hintedMarkupIds: Array.from(new Set(ids)) }),
-    setValidationHighlights: (ids) =>
-      set({ validationHighlightMarkupIds: Array.from(new Set(ids)) }),
-    clearValidationHighlights: () =>
-      set({ validationHighlightMarkupIds: [], validationIssueMode: false }),
-    setValidationIssueMode: (enabled) => set({ validationIssueMode: enabled }),
+    setValidationHighlights: (ids) => {
+      const uniqueIds = Array.from(new Set(ids));
+      set({ validationHighlightMarkupIds: uniqueIds });
+      if (uniqueIds.length > 0) scheduleValidationHighlightClear();
+      else clearValidationHighlightTimer();
+    },
+    clearValidationHighlights: () => {
+      clearValidationHighlightTimer();
+      set({ validationHighlightMarkupIds: [], validationIssueMode: false });
+    },
+    setValidationIssueMode: (enabled) => {
+      set({ validationIssueMode: enabled });
+      if (enabled) scheduleValidationHighlightClear();
+    },
+    reviewNetworkConflictsInIpSchema: (deviceIds) => {
+      const project = get().project;
+      if (!project || deviceIds.length === 0) return false;
+      const uniqueIds = Array.from(new Set(deviceIds));
+      const switchDevice = findSwitchForNetworkDevices(project, uniqueIds);
+      if (!switchDevice) {
+        // No switch schema to open — still select + highlight the devices
+        // so the user lands on their Network fields.
+        set((s) => ({
+          selectedMarkupIds: uniqueIds,
+          selectedBrand: null,
+          validationHighlightMarkupIds: uniqueIds,
+          validationIssueMode: true,
+          propertiesPanelFocusRequest: s.propertiesPanelFocusRequest + 1,
+          ipSchemaFocus: null,
+        }));
+        scheduleValidationHighlightClear();
+        return false;
+      }
+      set((s) => ({
+        selectedMarkupIds: [switchDevice.id],
+        selectedBrand: null,
+        validationHighlightMarkupIds: uniqueIds,
+        validationIssueMode: true,
+        propertiesPanelFocusRequest: s.propertiesPanelFocusRequest + 1,
+        ipSchemaFocus: {
+          requestId: (s.ipSchemaFocus?.requestId ?? 0) + 1,
+          switchId: switchDevice.id,
+          deviceIds: uniqueIds,
+        },
+      }));
+      scheduleValidationHighlightClear();
+      return true;
+    },
+    clearIpSchemaFocus: () => set({ ipSchemaFocus: null }),
 
     toggleLayer: (id) =>
       set((s) => {
@@ -3808,6 +3867,26 @@ function nextTagForMarkups(markups: Markup[], shortCode: string): string {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** How long canvas validation highlights stay before auto-clearing. */
+export const VALIDATION_HIGHLIGHT_TTL_MS = 20_000;
+
+let validationHighlightTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearValidationHighlightTimer() {
+  if (validationHighlightTimer !== null) {
+    clearTimeout(validationHighlightTimer);
+    validationHighlightTimer = null;
+  }
+}
+
+function scheduleValidationHighlightClear() {
+  clearValidationHighlightTimer();
+  validationHighlightTimer = setTimeout(() => {
+    validationHighlightTimer = null;
+    useProjectStore.getState().clearValidationHighlights();
+  }, VALIDATION_HIGHLIGHT_TTL_MS);
 }
 
 function cableRunEndpointKey(endpoint: CableRunEndpoint): string {

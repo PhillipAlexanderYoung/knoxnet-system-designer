@@ -183,7 +183,16 @@ export function validateProject(project: Project): ValidationIssue[] {
       pushIfValue(deviceLabels, device.labelOverride, device.id, sheet.id, deviceMeta);
       pushIfValue(ips, device.systemConfig?.network?.ipAddress, device.id, sheet.id, deviceMeta);
       pushIfValue(macs, device.systemConfig?.network?.macAddress, device.id, sheet.id, deviceMeta);
-      pushIfValue(hostnames, device.systemConfig?.network?.hostname, device.id, sheet.id, deviceMeta);
+      pushIfValue(
+        hostnames,
+        device.systemConfig?.network?.hostname,
+        device.id,
+        sheet.id,
+        {
+          ...deviceMeta,
+          detail: hostnameConflictDetail(device),
+        },
+      );
       pushIfValue(serials, device.systemConfig?.serialNumber, device.id, sheet.id, deviceMeta);
       pushIfValue(assetTags, device.systemConfig?.assetTag, device.id, sheet.id, deviceMeta);
       pushIfValue(cableTags, device.systemConfig?.cableTag, device.id, sheet.id, deviceMeta);
@@ -1548,6 +1557,13 @@ function isConduitRun(cable: CableMarkup): boolean {
 
 function deviceDetail(device: DeviceMarkup): string {
   return `${device.tag || device.id}${device.labelOverride ? ` (${device.labelOverride})` : ""}`;
+}
+
+/** Hostname conflicts are easiest to resolve beside the assigned IP. */
+function hostnameConflictDetail(device: DeviceMarkup): string {
+  const hostname = device.systemConfig?.network?.hostname?.trim() || "(no hostname)";
+  const ip = device.systemConfig?.network?.ipAddress?.trim() || "(no IP)";
+  return `${deviceDetail(device)} · ${hostname} · IP ${ip}`;
 }
 
 function labelDetail(kind: string, label: string | undefined, id: string): string {

@@ -81,18 +81,61 @@ export function nextAvailableHostname(project: Project, baseHostname: string, ex
   return `${base}-${Date.now().toString(36)}`;
 }
 
+/**
+ * Fresh network identity for a duplicated device. Tags are already unique
+ * at the call site; this makes hostname unique too and drops instance-
+ * specific fields (MAC / switch-port text) that would otherwise collide
+ * with the source device the moment the clone appears.
+ */
 export function withDuplicateNetworkIdentity(markup: DeviceMarkup, project: Project): DeviceMarkup {
   if (!isNetworkAddressableDevice(markup)) return markup;
-  const hostname = nextAvailableHostname(project, hostnameForTag(markup.tag), new Set([markup.id]));
+  const hostname = nextAvailableHostname(
+    project,
+    hostnameForTag(markup.tag) || markup.systemConfig?.network?.hostname || "device",
+    new Set([markup.id]),
+  );
+  const restNet = { ...(markup.systemConfig?.network ?? {}) };
+  delete restNet.macAddress;
+  const restConfig = { ...(markup.systemConfig ?? {}) };
+  delete restConfig.switchPort;
   return {
     ...markup,
-    systemConfig: mergeDeviceConfig(markup, {
+    systemConfig: {
+      ...restConfig,
       network: {
-        ...markup.systemConfig?.network,
+        ...restNet,
         hostname,
       },
-    }),
+    },
   };
+}
+
+/** Prefer a switch that already has any of `deviceIds` connected. */
+export function findSwitchForNetworkDevices(
+  project: Project,
+  deviceIds: string[],
+): DeviceMarkup | null {
+  const idSet = new Set(deviceIds);
+  const devices = project.sheets.flatMap((sheet) =>
+    sheet.markups.filter((m): m is DeviceMarkup => m.kind === "device"),
+  );
+  const byTag = new Map(devices.map((d) => [d.tag, d]));
+  const wantedTags = new Set(
+    devices.filter((d) => idSet.has(d.id)).map((d) => d.tag),
+  );
+
+  for (const connection of project.connections ?? []) {
+    const from = byTag.get(connection.fromTag);
+    const to = byTag.get(connection.toTag);
+    if (!from || !to) continue;
+    const switchDevice = isSwitchLikeDevice(from) ? from : isSwitchLikeDevice(to) ? to : null;
+    const endpoint = switchDevice === from ? to : switchDevice === to ? from : null;
+    if (switchDevice && endpoint && wantedTags.has(endpoint.tag)) {
+      return switchDevice;
+    }
+  }
+
+  return null;
 }
 
 export function connectedDevicesForSwitch(

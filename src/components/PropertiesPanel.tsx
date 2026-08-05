@@ -369,6 +369,9 @@ function ValidationWarnings({
   const clearValidationHighlights = useProjectStore((s) => s.clearValidationHighlights);
   const setValidationIssueMode = useProjectStore((s) => s.setValidationIssueMode);
   const validationIssueMode = useProjectStore((s) => s.validationIssueMode);
+  const reviewNetworkConflictsInIpSchema = useProjectStore(
+    (s) => s.reviewNetworkConflictsInIpSchema,
+  );
   const autoResolveValidationIssue = useProjectStore((s) => s.autoResolveValidationIssue);
   const autoResolveValidationIssues = useProjectStore((s) => s.autoResolveValidationIssues);
   if (issues.length === 0) return null;
@@ -392,7 +395,7 @@ function ValidationWarnings({
               }
             }}
             className="text-[10px] font-mono text-amber-knox hover:text-white"
-            title="Highlight all affected canvas items in red"
+            title="Highlight affected canvas items in red for 20 seconds"
           >
             {validationIssueMode ? "clear" : "highlight all"}
           </button>
@@ -411,26 +414,45 @@ function ValidationWarnings({
       <ul className="space-y-1">
         {shown.map((issue) => {
           const affectedIds = validationMarkupIdsForIssues([issue]);
+          const isHostnameConflict = issue.id.startsWith("duplicate-hostname:");
+          const isIpConflict = issue.id.startsWith("duplicate-ip:");
+          const detailLimit = isHostnameConflict || isIpConflict ? 6 : 2;
           return (
           <li
             key={issue.id}
-            className="leading-snug text-ink-300 rounded border border-transparent hover:border-amber-knox/20 hover:bg-ink-900/20 p-1"
+            className={`leading-snug text-ink-300 rounded border border-transparent hover:border-amber-knox/20 hover:bg-ink-900/20 p-1 ${
+              isHostnameConflict || isIpConflict ? "cursor-pointer" : ""
+            }`}
             onMouseEnter={() => affectedIds.length > 0 && setValidationHighlights(affectedIds)}
+            onClick={() => {
+              if ((isHostnameConflict || isIpConflict) && affectedIds.length > 0) {
+                reviewNetworkConflictsInIpSchema(affectedIds);
+              }
+            }}
           >
             <div>{issue.message}</div>
             {(issue.details?.length || issue.resolver || affectedIds.length > 0) && (
               <div className="mt-1 space-y-1">
-                {issue.details?.slice(0, 2).map((detail) => (
+                {issue.details?.slice(0, detailLimit).map((detail) => (
                   <div key={detail} className="text-[10px] text-ink-500">
                     {detail}
                   </div>
                 ))}
-                <div className="flex flex-wrap gap-1.5">
+                <div className="flex flex-wrap gap-1.5" onClick={(e) => e.stopPropagation()}>
+                  {(isHostnameConflict || isIpConflict) && affectedIds.length > 0 && (
+                    <button
+                      onClick={() => reviewNetworkConflictsInIpSchema(affectedIds)}
+                      className="rounded border border-signal-blue/40 px-1.5 py-0.5 text-[10px] font-mono text-signal-blue hover:bg-signal-blue/10"
+                      title="Open the switch IP schema and show duplicate IPs"
+                    >
+                      Review IPs
+                    </button>
+                  )}
                   {affectedIds.length > 0 && (
                     <button
                       onClick={() => setValidationHighlights(affectedIds)}
                       className="rounded border border-signal-red/40 px-1.5 py-0.5 text-[10px] font-mono text-signal-red hover:bg-signal-red/10"
-                      title="Highlight affected devices and cable runs"
+                      title="Highlight affected devices and cable runs for 20 seconds"
                     >
                       Highlight
                     </button>
@@ -1913,14 +1935,20 @@ function CollapsibleGroup({
   badge,
   children,
   defaultOpen = false,
+  forceOpen = false,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   title: string;
   badge?: string;
   children: React.ReactNode;
   defaultOpen?: boolean;
+  forceOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  useEffect(() => {
+    if (forceOpen) setOpen(true);
+  }, [forceOpen]);
+  const shown = forceOpen || open;
   return (
     <div className="rounded-md border border-white/5 overflow-hidden">
       <button
@@ -1936,9 +1964,9 @@ function CollapsibleGroup({
             </span>
           )}
         </div>
-        <ChevronDown className={`w-3.5 h-3.5 text-ink-400 transition-transform ${open ? "rotate-180" : ""}`} />
+        <ChevronDown className={`w-3.5 h-3.5 text-ink-400 transition-transform ${shown ? "rotate-180" : ""}`} />
       </button>
-      {open && <div className="px-2.5 py-2.5 space-y-2">{children}</div>}
+      {shown && <div className="px-2.5 py-2.5 space-y-2">{children}</div>}
     </div>
   );
 }
@@ -2203,6 +2231,8 @@ function ConnectedDevicesSection({
   onRemoveConnection,
   onDisconnectFromSwitch,
   portExhaustionMessage,
+  conflictDeviceIds = [],
+  forceOpen = false,
 }: {
   devices: ConnectedSwitchDevice[];
   switchPorts: PortSpec[] | undefined;
@@ -2221,9 +2251,12 @@ function ConnectedDevicesSection({
   onRemoveConnection: (connectionId: string) => void;
   onDisconnectFromSwitch: (connectionId: string) => void;
   portExhaustionMessage?: string;
+  conflictDeviceIds?: string[];
+  forceOpen?: boolean;
 }) {
   const [hoveredConnectionId, setHoveredConnectionId] = useState<string | null>(null);
   const [activePortId, setActivePortId] = useState<string | null>(null);
+  const conflictIdSet = useMemo(() => new Set(conflictDeviceIds), [conflictDeviceIds]);
   const activePortLabel = switchPorts?.find((port) => port.id === activePortId)?.label;
   const activePortConflict = activePortLabel
     ? portConflicts.find((conflict) => conflict.portLabel === activePortLabel)
@@ -2231,9 +2264,16 @@ function ConnectedDevicesSection({
   const selectedRows = activePortLabel
     ? devices.filter((row) => row.switchPort === activePortLabel)
     : [];
+  const conflictRows = devices.filter((row) => conflictIdSet.has(row.device.id));
   const selectedConnectionIds = new Set(selectedRows.map((row) => row.connection.id));
+  const conflictConnectionIds = new Set(conflictRows.map((row) => row.connection.id));
   const orderedDevices =
-    selectedRows.length > 0
+    conflictRows.length > 0
+      ? [
+          ...conflictRows,
+          ...devices.filter((row) => !conflictConnectionIds.has(row.connection.id)),
+        ]
+      : selectedRows.length > 0
       ? [
           ...selectedRows,
           ...devices.filter((row) => !selectedConnectionIds.has(row.connection.id)),
@@ -2249,7 +2289,14 @@ function ConnectedDevicesSection({
       title="Connected Devices"
       badge={devices.length > 0 ? String(devices.length) : undefined}
       defaultOpen={true}
+      forceOpen={forceOpen}
     >
+      {conflictRows.length > 0 && (
+        <div className="rounded-md border border-signal-red/40 bg-signal-red/10 px-2 py-1.5 text-[10px] text-signal-red leading-snug">
+          Hostname / IP conflict — duplicate assignments are listed first. Compare IPs below and
+          reassign as needed.
+        </div>
+      )}
       <div className="rounded-md border border-white/5 bg-ink-900/25 p-2 space-y-1.5">
         <div className="grid grid-cols-2 gap-1.5">
           <F label="Start IP">
@@ -2362,13 +2409,17 @@ function ConnectedDevicesSection({
           {orderedDevices.map(({ connection, device, devicePort, switchPort, viaInternalEndpoint }) => {
             const network = device.systemConfig?.network ?? {};
             const selectedPortRow = activePortLabel === switchPort;
+            const isConflictRow = conflictIdSet.has(device.id);
             return (
               <div
                 key={`${connection.id}:${device.id}`}
+                data-conflict-device={isConflictRow ? device.id : undefined}
                 onMouseEnter={() => setHoveredRow({ connection, device, devicePort, switchPort, viaInternalEndpoint })}
                 onMouseLeave={() => setHoveredRow(undefined)}
                 className={`rounded-md border bg-ink-900/20 p-2 space-y-1.5 transition-colors ${
-                  selectedPortRow && activePortConflict
+                  isConflictRow
+                    ? "border-signal-red/60 bg-signal-red/10"
+                    : selectedPortRow && activePortConflict
                     ? "border-signal-red/50 bg-signal-red/10"
                     : selectedPortRow
                     ? "border-signal-blue/60 bg-signal-blue/10"
@@ -2385,13 +2436,16 @@ function ConnectedDevicesSection({
                     <div className="text-[10px] text-ink-500 truncate">
                       {device.tag} · {devicesById[device.deviceId]?.label ?? device.deviceId}
                       {viaInternalEndpoint ? " · internal" : ""}
+                      {isConflictRow ? " · conflict" : ""}
                     </div>
                   </div>
-                  {network.ipAddress && (
-                    <span className="text-[10px] font-mono text-signal-blue shrink-0">
-                      {network.ipAddress}
-                    </span>
-                  )}
+                  <span
+                    className={`text-[10px] font-mono shrink-0 ${
+                      isConflictRow ? "text-signal-red" : "text-signal-blue"
+                    }`}
+                  >
+                    {network.ipAddress || "no IP"}
+                  </span>
                 </div>
                 <div className="grid grid-cols-2 gap-1.5">
                   <F label="Switch Port">
@@ -2739,6 +2793,7 @@ function SystemConfigSection({
     (s) => s.project?.connections ?? EMPTY_CONNECTIONS,
   );
   const project = useProjectStore((s) => s.project);
+  const ipSchemaFocus = useProjectStore((s) => s.ipSchemaFocus);
   const [open, setOpen] = useState(false);
   const [autoStartIp, setAutoStartIp] = useState("");
   const [autoVlan, setAutoVlan] = useState(String(DEFAULT_VLAN));
@@ -2749,6 +2804,12 @@ function SystemConfigSection({
   const [newToPortId, setNewToPortId] = useState("");
   const [newToPort, setNewToPort] = useState("");
   const [newMedium, setNewMedium] = useState("cat6");
+  const schemaFocusForThisSwitch =
+    ipSchemaFocus?.switchId === markup.id ? ipSchemaFocus : null;
+
+  useEffect(() => {
+    if (schemaFocusForThisSwitch) setOpen(true);
+  }, [schemaFocusForThisSwitch?.requestId, schemaFocusForThisSwitch]);
 
   // Structured port list for the source device — used to switch the
   // port input between a dropdown (known ports) and a free-text field
@@ -2964,6 +3025,8 @@ function SystemConfigSection({
                 disconnectConnectionFromSwitch(connectionId, markup.tag)
               }
               portExhaustionMessage={portExhaustionMessage}
+              conflictDeviceIds={schemaFocusForThisSwitch?.deviceIds ?? []}
+              forceOpen={!!schemaFocusForThisSwitch}
             />
           )}
 
