@@ -20,6 +20,7 @@ import {
   type ScheduleBlockMode,
 } from "../store/projectStore";
 import { devicesById, effectiveDevicePorts } from "../data/devices";
+import { WallOutletOptions } from "./WallOutletOptions";
 import {
   buildSwitchPortAssignmentPatches,
   effectivePortsForTag,
@@ -67,6 +68,7 @@ import {
   buildAutoIpAssignmentPatches,
   connectedDevicesForSwitch,
   isSwitchLikeDevice,
+  isNetworkAddressableDevice,
   mergeDeviceConfig,
   DEFAULT_NETWORK_START_IP,
   DEFAULT_VLAN,
@@ -902,6 +904,8 @@ function DeviceProps({
           </div>
         </div>
       </div>
+
+      <WallOutletOptions deviceId={markup.deviceId} onChange={(deviceId) => onChange({ deviceId })} />
 
       <Field label="Tag">
         <input
@@ -2408,6 +2412,7 @@ function ConnectedDevicesSection({
           )}
           {orderedDevices.map(({ connection, device, devicePort, switchPort, viaInternalEndpoint }) => {
             const network = device.systemConfig?.network ?? {};
+            const passiveOutlet = !!devicesById[device.deviceId]?.wallOutlet;
             const selectedPortRow = activePortLabel === switchPort;
             const isConflictRow = conflictIdSet.has(device.id);
             return (
@@ -2444,7 +2449,7 @@ function ConnectedDevicesSection({
                       isConflictRow ? "text-signal-red" : "text-signal-blue"
                     }`}
                   >
-                    {network.ipAddress || "no IP"}
+                    {passiveOutlet ? "passive" : network.ipAddress || "no IP"}
                   </span>
                 </div>
                 <div className="grid grid-cols-2 gap-1.5">
@@ -2458,6 +2463,7 @@ function ConnectedDevicesSection({
                       {devicePort || "Device uplink"}
                     </div>
                   </F>
+                  {!passiveOutlet && <>
                   <F label="IP">
                     <Inp
                       placeholder="192.168.1.x"
@@ -2493,6 +2499,7 @@ function ConnectedDevicesSection({
                       }
                     />
                   </F>
+                  </>}
                 </div>
               </div>
             );
@@ -2838,7 +2845,7 @@ function SystemConfigSection({
   const sections = {
     ...baseSections,
     switchCfg: baseSections.switchCfg && switchLike,
-    wireless: baseSections.wireless && !switchLike,
+    wireless: baseSections.wireless && !switchLike && !devicesById[markup.deviceId]?.wallOutlet,
   };
   const connectedSwitchDevices = useMemo(
     () => (project && sections.switchCfg ? connectedDevicesForSwitch(project, markup) : []),
@@ -2900,7 +2907,7 @@ function SystemConfigSection({
   const applyConnectedVlan = () => {
     const vlan = selectedBulkVlan();
     const patches = Object.fromEntries(
-      connectedSwitchDevices.map(({ device }) => [
+      connectedSwitchDevices.filter(({ device }) => isNetworkAddressableDevice(device)).map(({ device }) => [
         device.id,
         mergeDeviceConfig(device, {
           network: { ...(device.systemConfig?.network ?? {}), vlan },
@@ -2991,7 +2998,7 @@ function SystemConfigSection({
         <div className="space-y-2">
 
           {/* ── Network (all devices) ── */}
-          <NetworkSection net={net} managementUrl={cfg.managementUrl} patch={patchNet} patchCfg={patchCfg} />
+          {!devicesById[markup.deviceId]?.wallOutlet && <NetworkSection net={net} managementUrl={cfg.managementUrl} patch={patchNet} patchCfg={patchCfg} />}
 
           {/* ── Camera / encoder streams ── */}
           {sections.streams && <StreamsSection streams={streams} patch={patchStreams} />}

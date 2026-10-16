@@ -4,6 +4,7 @@
 // (drawSvgPath) on export.
 
 import type { PortSpec } from "../store/projectStore";
+import { wallOutletDevices, type WallOutletConfig } from "./wallOutlets";
 
 export type DeviceCategory =
   | "cameras"
@@ -47,6 +48,7 @@ export interface DeviceType {
    * the free-text fallback so the editor never blocks the user.
    */
   ports?: PortSpec[];
+  wallOutlet?: WallOutletConfig;
 }
 
 // ───────── Shared port templates ─────────
@@ -342,6 +344,7 @@ export const devices: DeviceType[] = [
   },
 
   // ───────── Network ─────────
+  ...wallOutletDevices,
   {
     id: "net-ap-i",
     label: "AP (Indoor)",

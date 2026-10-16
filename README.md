@@ -306,6 +306,37 @@ device type are inferred by category + shortCode (cameras get ETH0
 PoE-in, APs get ETH0+ETH1, switches get 24× PoE + 4× SFP+, etc.) or
 overridden explicitly with a `ports: PortSpec[]` field on the entry.
 
+### Network Wall Outlets
+
+Open the device library (`D`), select **Network**, and choose a Cat5e or
+Cat6 wall outlet under **Wall Outlets** (or search for "wall socket").
+The outlet controls in the palette and Properties panel select single-gang
+(1 or 2 sockets) or double-gang (2, 4, or 6 sockets) faceplates. Gang size
+describes the plate, while socket count describes the RJ45 outlets.
+Place the assembly on a sheet; it receives a `DATA-01`-style tag and also
+appears in the signal-flow diagram. Use Display Label for a room or location.
+
+Each socket has two selectable connection endpoints: **rear (cable)** for
+the permanent run and **front (RJ45)** for the patch lead to equipment.
+For example, connect a switch to `DATA-01` socket 1 rear, then socket 1 front
+to the endpoint device using System Config → Connections. Automatic cable
+assignment uses free rear terminals; select front sockets explicitly.
+Port Inventory reports list both sides separately. Front/rear pairing is
+documented in port notes; automatic circuit tracing through the outlet is
+not implemented.
+
+Outlets are passive: they do not receive an IP address or act as a switch.
+Changing category or plate configuration preserves tags and surviving port
+IDs; reducing the socket count is blocked if it would remove a connected
+terminal. Imported custom port overrides are preserved by blocking variant
+changes. Changes support undo/redo and `.knoxnet` save/load.
+
+Each assembly variant is a separate bid line with editable catalog pricing.
+Default prices and labor are planning allowances for the faceplate, loaded
+jacks, and termination work; back boxes and cable are excluded. Select cable
+runs separately (Cat5e UTP is included); changing the outlet category does
+not change existing cable runs or certify the installed channel.
+
 ### Tech Stack
 
 [React 18](https://react.dev),

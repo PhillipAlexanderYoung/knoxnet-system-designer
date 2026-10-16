@@ -6,6 +6,7 @@ import {
   type DeviceCategory,
 } from "../data/devices";
 import { cables as cableCatalog } from "../data/cables";
+import { wallOutletChangeError } from "../lib/wallOutlets";
 import { rackDevices as rackCatalog } from "../data/rackDevices";
 import { defaultBidDefaults, type BidDefaults } from "../data/defaults";
 import {
@@ -2927,6 +2928,11 @@ export const useProjectStore = create<State>()(
     updateMarkup: (id, patch) =>
       set((s) => {
         if (!s.project || !s.activeSheetId) return s;
+        const current = s.project.sheets.find((sheet) => sheet.id === s.activeSheetId)?.markups.find((markup) => markup.id === id);
+        if (current?.kind === "device") {
+          const error = wallOutletChangeError(s.project, current, { ...current, ...patch } as DeviceMarkup);
+          if (error) return { toasts: enqueueToast(s.toasts, "error", error, Date.now(), uid) };
+        }
         const project = syncRackSystems({
           ...s.project,
           sheets: s.project.sheets.map((sh) =>

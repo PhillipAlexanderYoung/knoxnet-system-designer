@@ -1,4 +1,4 @@
-import { effectiveDevicePorts } from "../data/devices";
+import { devicesById, effectiveDevicePorts } from "../data/devices";
 import type {
   DeviceConnection,
   DeviceMarkup,
@@ -40,6 +40,7 @@ export interface AutoIpAssignmentResult {
 }
 
 export function isNetworkAddressableDevice(device: DeviceMarkup): boolean {
+  if (devicesById[device.deviceId]?.wallOutlet) return false;
   const ports = effectiveDevicePorts(device.deviceId, device.instancePorts);
   if (ports?.some((p) => p.kind === "ethernet" || p.kind === "fiber" || p.kind === "wireless")) {
     return true;
@@ -48,6 +49,7 @@ export function isNetworkAddressableDevice(device: DeviceMarkup): boolean {
 }
 
 export function isSwitchLikeDevice(device: DeviceMarkup): boolean {
+  if (devicesById[device.deviceId]?.wallOutlet) return false;
   if (device.systemConfig?.switchConfig) return true;
   if (device.deviceId.toLowerCase().includes("switch")) return true;
   const ports = effectiveDevicePorts(device.deviceId, device.instancePorts) ?? [];
@@ -181,7 +183,7 @@ export function buildAutoIpAssignmentPatches(
   switchDevice: DeviceMarkup,
   options: AutoIpAssignmentOptions = {},
 ): AutoIpAssignmentResult {
-  const rows = connectedDevicesForSwitch(project, switchDevice);
+  const rows = connectedDevicesForSwitch(project, switchDevice).filter(({ device }) => isNetworkAddressableDevice(device));
   const targetIds = new Set(
     rows
       .filter(({ device }) => options.overwrite || shouldAutoAssignIp(project, device))

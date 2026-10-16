@@ -22,6 +22,17 @@ export const fiberStrandCountPresets = [2, 4, 6, 12, 24, 48, 72, 96, 144, 288];
 
 export const cables: CableType[] = [
   {
+    id: "cat5e",
+    label: "Cat5e UTP",
+    shortCode: "C5E",
+    costPerFoot: 0.28,
+    laborPerFoot: 0.018,
+    outsideDiameterIn: 0.21,
+    color: "#75C7ED",
+    thickness: 2.5,
+    notes: "Planning allowance; adjust catalog pricing for your installation.",
+  },
+  {
     id: "cat6",
     label: "Cat6 UTP",
     shortCode: "C6",

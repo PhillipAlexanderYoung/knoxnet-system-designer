@@ -4,6 +4,7 @@ import { categoryColor, categoryLabel } from "../brand/tokens";
 import { useProjectStore } from "../store/projectStore";
 import { Search, X, Clock } from "lucide-react";
 import { DeviceTile } from "./DeviceTile";
+import { WallOutletOptions } from "./WallOutletOptions";
 import { useFlowHintClass } from "../hooks/useFlowHints";
 
 const CATEGORIES: DeviceCategory[] = [
@@ -188,6 +189,11 @@ export function DevicePalette({
       </div>
 
       <div className="flex-1 overflow-y-auto p-2">
+        {activeDeviceId && (
+          <div className="mb-2">
+            <WallOutletOptions deviceId={activeDeviceId} onChange={setActiveDevice} />
+          </div>
+        )}
         {q ? (
           <div className="grid grid-cols-2 gap-2">
             {list.map((d) => (

@@ -380,7 +380,9 @@ export function DiagramBuilder() {
                       x={12}
                       y={34}
                       width={NODE_W - 24}
-                      text={cat?.label ?? dev.deviceId}
+                      text={cat?.wallOutlet
+                        ? `${cat.wallOutlet.category === "cat5e" ? "Cat5e" : "Cat6"} Wall Outlet`
+                        : cat?.label ?? dev.deviceId}
                       fontSize={11}
                       fill="#E2E7EF"
                       ellipsis
@@ -391,7 +393,9 @@ export function DiagramBuilder() {
                       y={50}
                       width={NODE_W - 24}
                       text={
-                        dev.systemConfig?.network?.ipAddress ??
+                        cat?.wallOutlet
+                          ? `${cat.wallOutlet.gangs}-gang · ${cat.wallOutlet.sockets} × RJ45`
+                          : dev.systemConfig?.network?.ipAddress ??
                         dev.systemConfig?.model ??
                         cat?.shortCode ??
                         ""

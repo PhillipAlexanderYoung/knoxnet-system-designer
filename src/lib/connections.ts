@@ -11,7 +11,7 @@ import type {
   PortSpec,
   Project,
 } from "../store/projectStore";
-import { effectiveDevicePorts } from "../data/devices";
+import { devicesById, effectiveDevicePorts } from "../data/devices";
 import { isRouteInfrastructureDevice } from "./cableRuns";
 
 /** Find the device markup with the given tag anywhere in the project.
@@ -117,6 +117,7 @@ export function nextAvailableDevicePort(
   if (!ports || ports.length === 0) return undefined;
   return ports.find(
     (port) =>
+      (!devicesById[device.deviceId]?.wallOutlet || port.id.endsWith("-rear")) &&
       isPortCompatibleWithConnection(port, conn) &&
       !isDevicePortInUse(project, device, port.id, conn.id),
   );

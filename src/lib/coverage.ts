@@ -56,7 +56,7 @@ const finiteNumber = (value: unknown, fallback: number) =>
 
 export function resolveCoverage(m: DeviceMarkup): EffectiveCoverage | null {
   const dev = devicesById[m.deviceId];
-  if (!dev) return null;
+  if (!dev || dev.wallOutlet) return null;
   const preset = getCoveragePreset(dev.id, dev.category);
   if (!preset) return null;
   const override = m.coverage ?? {};
