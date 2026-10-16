@@ -12,6 +12,7 @@ import { CalibrationDialog } from "./CalibrationDialog";
 import { saveProject } from "../persist/db";
 import { RackBuilder } from "../rack/RackBuilder";
 import { DiagramBuilder } from "../diagrams/DiagramBuilder";
+import { BuildingView } from "../building/BuildingView";
 import { useFlowHintClass } from "../hooks/useFlowHints";
 import {
   Calculator,
@@ -70,6 +71,8 @@ export function Workspace() {
         <RackBuilder />
       ) : view === "diagrams" ? (
         <DiagramBuilder />
+      ) : view === "floors" ? (
+        <BuildingView />
       ) : (
         <div className="flex-1 flex overflow-hidden">
           <LeftRail className="!hidden md:!flex" />
@@ -116,7 +119,7 @@ export function Workspace() {
           )}
         </div>
       )}
-      <StatusBar />
+      {view !== "floors" && <StatusBar />}
       {calibrationOpen && (
         <CalibrationDialog
           points={calibrationOpen.pendingPoints}

@@ -402,6 +402,13 @@ The only network requests are the two web-font CDN fetches in
 `index.html` (Inter and JetBrains Mono). You can self-host both if
 you'd rather not hit a CDN.
 
+## Multi-floor routing
+
+Use **Floors** to assign calibrated drawings to building floors, align them with
+two matching points, compare translucent overlays, and route a continuous cable
+through named vertical risers. Bids and cable reports include horizontal and
+vertical lengths once per cable. See [the workflow and measurement limits](docs/multi-floor-routing.md).
+
 ## Feedback / Contributions
 
 PRs are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for local

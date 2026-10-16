@@ -8,6 +8,7 @@ import type {
   BidLineLaborOverrides,
 } from "../store/projectStore";
 import { devicesById } from "../data/devices";
+import { buildingMeasurementSheets } from "./building";
 import { cablesById } from "../data/cables";
 import { rackDevicesById } from "../data/rackDevices";
 import { polylineLengthPts, ptsToFeet } from "./geometry";
@@ -115,10 +116,11 @@ export function computeBid(project: Project): BidResult {
   const deviceMap = new Map<string, DeviceLine>();
   const cableMap = new Map<string, CableLine>();
   const rackMap = new Map<string, RackLine>();
-  const warnings: string[] = [];
+  const measured = buildingMeasurementSheets(project);
+  const warnings: string[] = [...measured.warnings];
   const overrides = project.catalogOverrides;
 
-  for (const sheet of project.sheets) {
+  for (const sheet of measured.sheets) {
     for (const m of sheet.markups) {
       tally(m, sheet, deviceMap, cableMap, slackPercent, warnings, overrides);
     }

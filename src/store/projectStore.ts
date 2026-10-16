@@ -6,6 +6,7 @@ import {
   type DeviceCategory,
 } from "../data/devices";
 import { cables as cableCatalog } from "../data/cables";
+import { addBuildingRoute, buildingError, removeBuildingRoute, type BuildingModel, type BuildingRouteDraft } from "../lib/building";
 import { rackDevices as rackCatalog } from "../data/rackDevices";
 import { defaultBidDefaults, type BidDefaults } from "../data/defaults";
 import {
@@ -88,7 +89,7 @@ export type { FlowHintStep };
 
 export type QualityMode = "speed" | "balanced" | "quality";
 
-export type ViewMode = "sheets" | "racks" | "diagrams";
+export type ViewMode = "sheets" | "racks" | "diagrams" | "floors";
 
 // ───────── Diagram types ─────────
 //
@@ -1059,6 +1060,7 @@ export interface ReportTemplate {
 
 export interface Project {
   id: string;
+  building?: BuildingModel;
   meta: ProjectMeta;
   sheets: Sheet[];
   racks: Rack[];
@@ -1287,6 +1289,9 @@ interface State {
   // actions
   newProject: (meta?: Partial<ProjectMeta>) => void;
   loadProject: (p: Project) => void;
+  updateBuilding: (building: BuildingModel) => boolean;
+  saveBuildingRoute: (draft: BuildingRouteDraft) => boolean;
+  deleteBuildingRoute: (id: string) => void;
   undo: () => void;
   redo: () => void;
   clearHistory: () => void;
@@ -2002,9 +2007,33 @@ export const useProjectStore = create<State>()(
         };
       }),
 
+    updateBuilding: (building) => {
+      const error = buildingError(building);
+      if (error) { get().pushToast("error", error); return false; }
+      if (!get().project) return false;
+      set((s) => s.project ? { project: { ...s.project, building, updatedAt: Date.now() }, history: historyAfterProjectChange(s.history, s.project) } : s);
+      return true;
+    },
+    saveBuildingRoute: (draft) => {
+      const current = get().project;
+      if (!current) return false;
+      try {
+        const project = addBuildingRoute(current, draft, uid);
+        set((s) => ({ project, history: historyAfterProjectChange(s.history, current) }));
+        return true;
+      } catch (error) {
+        get().pushToast("error", error instanceof Error ? error.message : "Unable to save route.");
+        return false;
+      }
+    },
+    deleteBuildingRoute: (id) => set((s) => s.project ? { project: removeBuildingRoute(s.project, id), history: historyAfterProjectChange(s.history, s.project) } : s),
+
     removeSheet: (id) =>
       set((s) => {
         if (!s.project) return s;
+        if (s.project.building?.routes.some((route) => route.segments.some((segment) => segment.sheetId === id))) {
+          return { toasts: enqueueToast(s.toasts, "error", "Remove routes using this drawing in Floors before deleting the drawing.", Date.now(), uid) };
+        }
         const sheets = s.project.sheets.filter((sh) => sh.id !== id);
         const newActive =
           s.activeSheetId === id ? (sheets[0]?.id ?? null) : s.activeSheetId;
@@ -2927,6 +2956,14 @@ export const useProjectStore = create<State>()(
     updateMarkup: (id, patch) =>
       set((s) => {
         if (!s.project || !s.activeSheetId) return s;
+        if (s.project.building?.routes.some((route) => route.segments.some((segment) => segment.markupId === id))) {
+          return { toasts: enqueueToast(s.toasts, "error", "This segment belongs to a multi-floor cable. Remove and redraw the route in Floors to change it.", Date.now(), uid) };
+        }
+        if ("x" in patch || "y" in patch) {
+          const routeSegmentIds = new Set(s.project.building?.routes.flatMap((route) => route.segments.map((segment) => segment.markupId)) ?? []);
+          const attached = s.project.sheets.some((sheet) => sheet.markups.some((markup) => markup.kind === "cable" && routeSegmentIds.has(markup.id) && markup.pointAttachments?.some((attachment) => attachment?.deviceMarkupId === id)));
+          if (attached) return { toasts: enqueueToast(s.toasts, "error", "Remove and redraw the attached multi-floor route in Floors before moving this device.", Date.now(), uid) };
+        }
         const project = syncRackSystems({
           ...s.project,
           sheets: s.project.sheets.map((sh) =>
@@ -2978,7 +3015,8 @@ export const useProjectStore = create<State>()(
         const attachedRunIndexes = deviceAttachedRunIndexes(sheet.markups, device);
         const lockedAttachment = attachedRunIndexes.some(({ cable }) => cable.locked);
         if (lockedAttachment) {
-          get().pushToast("error", "Unlock attached cable runs before moving this device");
+          const buildingRoute = s.project.building?.routes.some((route) => route.segments.some((segment) => attachedRunIndexes.some(({ cable }) => cable.id === segment.markupId)));
+          get().pushToast("error", buildingRoute ? "Remove and redraw the attached multi-floor route in Floors before moving this device." : "Unlock attached cable runs before moving this device");
           return s;
         }
 
@@ -4063,6 +4101,9 @@ function projectWithoutMarkups(
   ids: Set<string>,
   options: { removeMaskRegions?: boolean } = {},
 ): Project {
+  for (const route of project.building?.routes ?? []) {
+    if (route.segments.some((segment) => ids.has(segment.markupId))) project = removeBuildingRoute(project, route.id);
+  }
   const sheet = project.sheets.find((sh) => sh.id === sheetId);
   if (!sheet) return project;
   const removed = sheet.markups.filter((markup) => ids.has(markup.id));

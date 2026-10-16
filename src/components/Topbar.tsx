@@ -177,6 +177,7 @@ export function Topbar() {
         </div>
         <div className="hidden h-6 w-px bg-white/10 md:block" />
         {/* View tabs */}
+        <button onClick={() => setView("floors")} className={`btn-ghost ${view === "floors" ? "text-amber-knox" : ""}`}>Floors</button>
         <div className="hidden md:inline-flex items-center bg-ink-700/60 border border-white/5 rounded-md p-0.5">
           <button
             onClick={() => setView("sheets")}

@@ -33,6 +33,7 @@ import type {
   Sheet,
 } from "../store/projectStore";
 import { devicesById, effectiveDevicePorts } from "../data/devices";
+import { buildingMeasurementSheets } from "../lib/building";
 import { cablesById } from "../data/cables";
 import { cableDisplayLabel } from "../lib/conduit";
 import { cableLengthBreakdown, carriedByConduits, runCountFor } from "../lib/cableRuns";
@@ -132,7 +133,8 @@ function selectCables(project: Project): Row[] {
   const rows: Row[] = [];
   const physicalLabels = generatedCableLabelsForProject(project);
   const validationWarnings = validationWarningsByEntity(project);
-  for (const sheet of project.sheets) {
+  const measured = buildingMeasurementSheets(project);
+  for (const sheet of measured.sheets) {
     for (const m of sheet.markups) {
       if (m.kind !== "cable") continue;
       const cab = m as CableMarkup;
@@ -171,6 +173,19 @@ function selectCables(project: Project): Row[] {
         validationWarnings: validationWarnings.get(cab.id) ?? "",
       });
     }
+  }
+  for (const route of project.building?.routes ?? []) {
+    if (measured.sheets.some((sheet) => sheet.id === route.id)) continue;
+    rows.push({
+      id: route.id,
+      physicalLabel: route.label,
+      cableId: route.cableId,
+      cableLabel: cablesById[route.cableId]?.label ?? route.cableId,
+      sheetName: route.segments.map((segment) => project.sheets.find((sheet) => sheet.id === segment.sheetId)?.name ?? "Missing drawing").join(" → "),
+      lengthFt: null,
+      lengthFtWithSlack: null,
+      validationWarnings: measured.warnings.find((warning) => warning.startsWith(`${route.label}:`)) ?? "Unable to measure multi-floor route.",
+    });
   }
   return rows;
 }

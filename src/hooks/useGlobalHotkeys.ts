@@ -64,6 +64,8 @@ export function useGlobalHotkeys() {
         return;
       }
 
+      if (s.view === "floors") return;
+
       // Arrow-key nudge for selected markups
       if (
         !e.metaKey &&
